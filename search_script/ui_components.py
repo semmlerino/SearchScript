@@ -1,30 +1,21 @@
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
 import logging
 import json
 import csv
 from typing import Callable, Optional
-from datetime import datetime
+
+from PySide6.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QLineEdit, QComboBox, QCheckBox, QPushButton,
+    QTreeWidget, QTreeWidgetItem, QProgressBar, QHeaderView,
+    QFileDialog, QMessageBox, QMenu
+)
+from PySide6.QtCore import Qt
 
 
-class SearchUI:
-    def __init__(self, root: tk.Tk, logger: Optional[logging.Logger] = None):
-        self.root = root
+class SearchUI(QMainWindow):
+    def __init__(self, logger: Optional[logging.Logger] = None):
+        super().__init__()
         self.logger = logger or logging.getLogger(__name__)
-
-        # Variables
-        self.dir_var = tk.StringVar()
-        self.search_var = tk.StringVar()
-        self.include_var = tk.StringVar()
-        self.exclude_var = tk.StringVar()
-        self.within_var = tk.BooleanVar()
-        self.status_var = tk.StringVar()
-
-        self.mode_var = tk.StringVar(value="substring")
-        self.depth_var = tk.StringVar()
-        self.min_size_var = tk.StringVar()
-        self.max_size_var = tk.StringVar()
-        self.match_folders_var = tk.BooleanVar()
 
         # Callbacks
         self.on_search_start: Optional[Callable] = None
@@ -40,183 +31,178 @@ class SearchUI:
 
     def _setup_ui(self):
         """Initialize the UI components."""
-        self.root.title("Enhanced File Search Tool")
-        self.root.geometry("1200x700")
-        self.root.resizable(True, True)
+        self.setWindowTitle("Enhanced File Search Tool")
+        self.resize(1200, 700)
 
-        self._create_directory_frame()
-        self._create_search_frame()
-        self._create_options_frame()
-        self._create_progress_frame()
-        self._create_button_frame()
-        self._create_results_frame()
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        self._main_layout = QVBoxLayout(central_widget)
+        self._main_layout.setContentsMargins(10, 10, 10, 10)
+        self._main_layout.setSpacing(6)
 
-    def _create_directory_frame(self):
-        """Create directory selection frame."""
-        dir_frame = tk.Frame(self.root)
-        dir_frame.pack(pady=10, padx=10, fill='x')
+        self._create_directory_row()
+        self._create_search_row()
+        self._create_options_section()
+        self._create_advanced_filters_row()
+        self._create_progress_row()
+        self._create_button_row()
+        self._create_results_tree()
 
-        tk.Label(dir_frame, text="Directory:").pack(side=tk.LEFT)
-        tk.Entry(dir_frame, textvariable=self.dir_var, width=80).pack(side=tk.LEFT, padx=5)
-        tk.Button(dir_frame, text="Browse", command=self._browse_directory).pack(side=tk.LEFT)
+    def _create_directory_row(self):
+        """Create directory selection row."""
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Directory:"))
+        self.dir_entry = QLineEdit()
+        row.addWidget(self.dir_entry, stretch=1)
+        browse_btn = QPushButton("Browse")
+        browse_btn.clicked.connect(self._browse_directory)
+        row.addWidget(browse_btn)
+        self._main_layout.addLayout(row)
 
-    def _create_search_frame(self):
-        """Create search term frame."""
-        search_frame = tk.Frame(self.root)
-        search_frame.pack(pady=5, padx=10, fill='x')
+    def _create_search_row(self):
+        """Create search term row."""
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Search Term:"))
+        self.search_entry = QLineEdit()
+        row.addWidget(self.search_entry, stretch=1)
 
-        tk.Label(search_frame, text="Search Term:").pack(side=tk.LEFT)
-        self.search_entry = tk.Entry(search_frame, textvariable=self.search_var, width=80)
-        self.search_entry.pack(side=tk.LEFT, padx=5)
+        row.addWidget(QLabel("Mode:"))
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["substring", "glob", "regex"])
+        self.mode_combo.setCurrentText("substring")
+        self.mode_combo.setFixedWidth(100)
+        row.addWidget(self.mode_combo)
 
-        # Search mode
-        tk.Label(search_frame, text="Mode:").pack(side=tk.LEFT, padx=(15, 0))
-        self.mode_combo = ttk.Combobox(
-            search_frame, textvariable=self.mode_var,
-            values=["substring", "glob", "regex"], state="readonly", width=10
-        )
-        self.mode_combo.pack(side=tk.LEFT, padx=5)
+        row.addWidget(QLabel("Preset:"))
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItems([
+            "", "Images", "Code", "Documents", "Videos", "Archives", "Large Files (>10MB)"
+        ])
+        self.preset_combo.setFixedWidth(160)
+        self.preset_combo.currentTextChanged.connect(self._apply_preset)
+        row.addWidget(self.preset_combo)
 
-        # Presets
-        tk.Label(search_frame, text="Preset:").pack(side=tk.LEFT, padx=(15, 0))
-        self.preset_combo = ttk.Combobox(
-            search_frame, values=[
-                "", "Images", "Code", "Documents", "Videos", "Archives", "Large Files (>10MB)"
-            ], state="readonly", width=18
-        )
-        self.preset_combo.pack(side=tk.LEFT, padx=5)
-        self.preset_combo.bind("<<ComboboxSelected>>", self._apply_preset)
+        self._main_layout.addLayout(row)
 
-    def _create_options_frame(self):
-        """Create options frame."""
-        options_frame = tk.Frame(self.root)
-        options_frame.pack(pady=5, padx=10, fill='x')
+    def _create_options_section(self):
+        """Create checkbutton and file type filter rows."""
+        self.within_checkbox = QCheckBox("Search within file contents")
+        self._main_layout.addWidget(self.within_checkbox)
 
-        tk.Checkbutton(
-            options_frame,
-            text="Search within file contents",
-            variable=self.within_var
-        ).pack(anchor='w')
+        include_row = QHBoxLayout()
+        include_row.addWidget(QLabel("Include file types (e.g., .txt, .py):"))
+        include_row.addStretch()
+        self._main_layout.addLayout(include_row)
 
-        tk.Label(
-            options_frame,
-            text="Include file types (e.g., .txt, .py):"
-        ).pack(anchor='w', pady=(10, 0))
-        tk.Entry(
-            options_frame,
-            textvariable=self.include_var,
-            width=100
-        ).pack(anchor='w', padx=5)
+        self.include_entry = QLineEdit()
+        self._main_layout.addWidget(self.include_entry)
 
-        tk.Label(
-            options_frame,
-            text="Exclude file types (e.g., .log, .tmp):"
-        ).pack(anchor='w', pady=(10, 0))
-        tk.Entry(
-            options_frame,
-            textvariable=self.exclude_var,
-            width=100
-        ).pack(anchor='w', padx=5)
+        exclude_row = QHBoxLayout()
+        exclude_row.addWidget(QLabel("Exclude file types (e.g., .log, .tmp):"))
+        exclude_row.addStretch()
+        self._main_layout.addLayout(exclude_row)
 
-        # Advanced filters row
-        adv_frame = tk.Frame(options_frame)
-        adv_frame.pack(anchor='w', pady=(10, 0))
+        self.exclude_entry = QLineEdit()
+        self._main_layout.addWidget(self.exclude_entry)
 
-        tk.Label(adv_frame, text="Max depth:").pack(side=tk.LEFT)
-        tk.Entry(adv_frame, textvariable=self.depth_var, width=6).pack(side=tk.LEFT, padx=(5, 15))
+    def _create_advanced_filters_row(self):
+        """Create advanced filters row."""
+        row = QHBoxLayout()
 
-        tk.Label(adv_frame, text="Min size (bytes):").pack(side=tk.LEFT)
-        tk.Entry(adv_frame, textvariable=self.min_size_var, width=12).pack(side=tk.LEFT, padx=(5, 15))
+        row.addWidget(QLabel("Max depth:"))
+        self.depth_entry = QLineEdit()
+        self.depth_entry.setFixedWidth(60)
+        row.addWidget(self.depth_entry)
+        row.addSpacing(15)
 
-        tk.Label(adv_frame, text="Max size (bytes):").pack(side=tk.LEFT)
-        tk.Entry(adv_frame, textvariable=self.max_size_var, width=12).pack(side=tk.LEFT, padx=(5, 15))
+        row.addWidget(QLabel("Min size (bytes):"))
+        self.min_size_entry = QLineEdit()
+        self.min_size_entry.setFixedWidth(100)
+        row.addWidget(self.min_size_entry)
+        row.addSpacing(15)
 
-        tk.Checkbutton(adv_frame, text="Match folder names", variable=self.match_folders_var).pack(side=tk.LEFT, padx=(15, 0))
+        row.addWidget(QLabel("Max size (bytes):"))
+        self.max_size_entry = QLineEdit()
+        self.max_size_entry.setFixedWidth(100)
+        row.addWidget(self.max_size_entry)
+        row.addSpacing(15)
 
-    def _create_progress_frame(self):
-        """Create progress bar and status."""
-        progress_frame = tk.Frame(self.root)
-        progress_frame.pack(pady=10, padx=10, fill='x')
+        self.match_folders_checkbox = QCheckBox("Match folder names")
+        row.addWidget(self.match_folders_checkbox)
+        row.addStretch()
 
-        self.progress_bar = ttk.Progressbar(progress_frame, mode='indeterminate')
-        self.progress_bar.pack(fill='x')
+        self._main_layout.addLayout(row)
 
-        tk.Label(self.root, textvariable=self.status_var).pack(pady=(0, 10))
+    def _create_progress_row(self):
+        """Create progress bar and status label."""
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(0)
+        self._main_layout.addWidget(self.progress_bar)
 
-    def _create_button_frame(self):
-        """Create search and cancel buttons."""
-        button_frame = tk.Frame(self.root)
-        button_frame.pack(pady=5)
+        self.status_label = QLabel("")
+        self._main_layout.addWidget(self.status_label)
 
-        self.search_button = tk.Button(
-            button_frame,
-            text="Search",
-            command=self._on_search_clicked,
-            bg="blue",
-            fg="white",
-            width=15
-        )
-        self.search_button.pack(side=tk.LEFT, padx=10)
+    def _create_button_row(self):
+        """Create search, cancel and export buttons."""
+        row = QHBoxLayout()
+        row.addStretch()
 
-        self.cancel_button = tk.Button(
-            button_frame,
-            text="Cancel",
-            command=self._on_cancel_clicked,
-            bg="red",
-            fg="white",
-            width=15,
-            state=tk.DISABLED
-        )
-        self.cancel_button.pack(side=tk.LEFT, padx=10)
+        self.search_button = QPushButton("Search")
+        self.search_button.setFixedWidth(120)
+        self.search_button.setStyleSheet("background-color: blue; color: white;")
+        self.search_button.clicked.connect(self._on_search_clicked)
+        row.addWidget(self.search_button)
 
-        self.export_button = tk.Button(
-            button_frame, text="Export", command=self._on_export_clicked,
-            width=15, state=tk.DISABLED
-        )
-        self.export_button.pack(side=tk.LEFT, padx=10)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setFixedWidth(120)
+        self.cancel_button.setStyleSheet("background-color: red; color: white;")
+        self.cancel_button.clicked.connect(self._on_cancel_clicked)
+        self.cancel_button.setEnabled(False)
+        row.addWidget(self.cancel_button)
 
-    def _create_results_frame(self):
-        """Create results treeview."""
-        results_frame = tk.Frame(self.root)
-        results_frame.pack(pady=5, padx=10, fill='both', expand=True)
+        self.export_button = QPushButton("Export")
+        self.export_button.setFixedWidth(120)
+        self.export_button.clicked.connect(self._on_export_clicked)
+        self.export_button.setEnabled(False)
+        row.addWidget(self.export_button)
 
-        columns = ("File Path", "Matching Line", "Last Modified")
-        self.results_tree = ttk.Treeview(results_frame, columns=columns, show='headings')
+        row.addStretch()
+        self._main_layout.addLayout(row)
 
-        # Configure columns
-        for col in columns:
-            self.results_tree.heading(
-                col,
-                text=col,
-                command=lambda c=col: self._sort_column(c, False)
-            )
+    def _create_results_tree(self):
+        """Create results QTreeWidget."""
+        columns = ["File Path", "Matching Line", "Last Modified"]
+        self.results_tree = QTreeWidget()
+        self.results_tree.setColumnCount(len(columns))
+        self.results_tree.setHeaderLabels(columns)
+        self.results_tree.setSortingEnabled(True)
 
-        self.results_tree.column("File Path", width=600)
-        self.results_tree.column("Matching Line", width=400)
-        self.results_tree.column("Last Modified", width=200)
-        self.results_tree.pack(side='left', fill='both', expand=True)
+        self.results_tree.setColumnWidth(0, 600)
+        self.results_tree.setColumnWidth(1, 400)
+        self.results_tree.setColumnWidth(2, 200)
 
-        # Scrollbar
-        scrollbar = ttk.Scrollbar(results_frame, orient="vertical", command=self.results_tree.yview)
-        self.results_tree.configure(yscroll=scrollbar.set)
-        scrollbar.pack(side='right', fill='y')
+        header = self.results_tree.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
 
-        # Event bindings
-        self.results_tree.bind("<Double-1>", self._on_result_double_click)
-        self.results_tree.bind("<Button-3>", self._show_context_menu)
+        # Double-click
+        self.results_tree.itemDoubleClicked.connect(self._on_result_double_click)
 
         # Context menu
-        self.context_menu = tk.Menu(self.root, tearoff=0)
-        self.context_menu.add_command(
-            label="Open Containing Folder",
-            command=self._on_open_containing_folder
-        )
+        self.results_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.results_tree.customContextMenuRequested.connect(self._show_context_menu)
+
+        self._main_layout.addWidget(self.results_tree, stretch=1)
+
+    # --- Event handlers ---
 
     def _browse_directory(self):
         """Handle directory browse button click."""
-        directory = filedialog.askdirectory()
+        directory = QFileDialog.getExistingDirectory(self, "Select Directory")
         if directory:
-            self.dir_var.set(directory)
+            self.dir_entry.setText(directory)
             self.logger.info(f"Directory selected: {directory}")
 
     def _on_search_clicked(self):
@@ -226,121 +212,69 @@ class SearchUI:
 
         if self.on_search_start:
             search_params = {
-                'directory': self.dir_var.get(),
-                'search_term': self.search_entry.get(),
-                'include_types': [ext.strip().lower() for ext in self.include_var.get().split(",") if ext.strip()],
-                'exclude_types': [ext.strip().lower() for ext in self.exclude_var.get().split(",") if ext.strip()],
-                'search_within_files': self.within_var.get(),
-                'search_mode': self.mode_var.get(),
-                'max_depth': int(self.depth_var.get()) if self.depth_var.get().strip() else None,
-                'min_size': int(self.min_size_var.get()) if self.min_size_var.get().strip() else None,
-                'max_size': int(self.max_size_var.get()) if self.max_size_var.get().strip() else None,
-                'match_folders': self.match_folders_var.get(),
+                'directory': self.dir_entry.text(),
+                'search_term': self.search_entry.text(),
+                'include_types': [ext.strip().lower() for ext in self.include_entry.text().split(",") if ext.strip()],
+                'exclude_types': [ext.strip().lower() for ext in self.exclude_entry.text().split(",") if ext.strip()],
+                'search_within_files': self.within_checkbox.isChecked(),
+                'search_mode': self.mode_combo.currentText(),
+                'max_depth': int(self.depth_entry.text()) if self.depth_entry.text().strip() else None,
+                'min_size': int(self.min_size_entry.text()) if self.min_size_entry.text().strip() else None,
+                'max_size': int(self.max_size_entry.text()) if self.max_size_entry.text().strip() else None,
+                'match_folders': self.match_folders_checkbox.isChecked(),
             }
             self.on_search_start(search_params)
 
     def _on_cancel_clicked(self):
         """Handle cancel button click."""
-        if messagebox.askyesno("Cancel Search", "Are you sure you want to cancel the search?"):
+        result = QMessageBox.question(
+            self,
+            "Cancel Search",
+            "Are you sure you want to cancel the search?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if result == QMessageBox.StandardButton.Yes:
             if self.on_search_cancel:
                 self.on_search_cancel()
 
     def _validate_inputs(self) -> bool:
         """Validate user inputs."""
-        if not self.dir_var.get():
-            messagebox.showwarning("Input Error", "Please select a directory to search.")
+        if not self.dir_entry.text():
+            QMessageBox.warning(self, "Input Error", "Please select a directory to search.")
             return False
 
-        if not self.search_entry.get():
-            messagebox.showwarning("Input Error", "Please enter a search term.")
+        if not self.search_entry.text():
+            QMessageBox.warning(self, "Input Error", "Please enter a search term.")
             return False
 
         return True
 
-    def _sort_column(self, col: str, reverse: bool):
-        """Sort treeview column."""
-        try:
-            items = [(self.results_tree.set(k, col), k) for k in self.results_tree.get_children('')]
-
-            if col == "Last Modified":
-                items.sort(
-                    key=lambda t: datetime.strptime(t[0], "%Y-%m-%d %H:%M:%S") if t[0] != "" else datetime.min,
-                    reverse=reverse
-                )
-            else:
-                items.sort(key=lambda t: t[0].lower(), reverse=reverse)
-
-            for index, (val, k) in enumerate(items):
-                self.results_tree.move(k, '', index)
-
-            self.results_tree.heading(col, command=lambda: self._sort_column(col, not reverse))
-        except Exception as e:
-            self.logger.error(f"Error sorting column {col}: {e}")
-
-    def _on_result_double_click(self, event):
+    def _on_result_double_click(self, item: QTreeWidgetItem, column: int):
         """Handle result double-click."""
         if self.on_result_double_click:
-            selected_item = self.results_tree.selection()
-            if selected_item:
-                item = self.results_tree.item(selected_item)
-                file_path = item['values'][0]
-                self.on_result_double_click(file_path)
+            file_path = item.text(0)
+            self.on_result_double_click(file_path)
 
-    def _show_context_menu(self, event):
+    def _show_context_menu(self, pos):
         """Show context menu on right-click."""
-        selected_item = self.results_tree.identify_row(event.y)
-        if selected_item:
-            self.results_tree.selection_set(selected_item)
-            self.context_menu.post(event.x_root, event.y_root)
+        item = self.results_tree.itemAt(pos)
+        if item:
+            self.results_tree.setCurrentItem(item)
+            menu = QMenu(self)
+            open_action = menu.addAction("Open Containing Folder")
+            open_action.triggered.connect(self._on_open_containing_folder)
+            menu.exec(self.results_tree.viewport().mapToGlobal(pos))
 
     def _on_open_containing_folder(self):
         """Handle open containing folder menu item."""
         if self.on_open_containing_folder:
-            selected_item = self.results_tree.selection()
-            if selected_item:
-                item = self.results_tree.item(selected_item)
-                file_path = item['values'][0]
+            item = self.results_tree.currentItem()
+            if item:
+                file_path = item.text(0)
                 self.on_open_containing_folder(file_path)
 
-    def set_search_state(self, searching: bool):
-        """Update UI state for search/idle."""
-        self.search_button.config(state=tk.DISABLED if searching else tk.NORMAL)
-        self.cancel_button.config(state=tk.NORMAL if searching else tk.DISABLED)
-        if not searching:
-            has_results = len(self.results_tree.get_children()) > 0
-            self.export_button.config(state=tk.NORMAL if has_results else tk.DISABLED)
-        else:
-            self.export_button.config(state=tk.DISABLED)
-
-        if searching:
-            self.progress_bar.config(mode='indeterminate')
-            self.progress_bar.start(10)
-        else:
-            self.progress_bar.stop()
-            self.progress_bar.config(mode='determinate', value=0)
-
-    def clear_results(self):
-        """Clear the results tree."""
-        self.results_tree.delete(*self.results_tree.get_children())
-
-    def add_result(self, file_path: str, display_text: str = "", mod_time: str = ""):
-        """Add a result to the tree."""
-        self.results_tree.insert("", tk.END, values=(file_path, display_text, mod_time))
-
-    def update_status(self, message: str):
-        """Update status message."""
-        self.status_var.set(message)
-
-    def show_no_results_message(self):
-        """Show no results found message."""
-        messagebox.showinfo("No Matches", "No matches found.")
-
-    def show_error_message(self, title: str, message: str):
-        """Show error message."""
-        messagebox.showerror(title, message)
-
-    def _apply_preset(self, event=None):
-        preset = self.preset_combo.get()
+    def _apply_preset(self, preset: str):
+        """Apply a file type preset."""
         presets = {
             "Images": (".jpg, .jpeg, .png, .gif, .bmp, .tiff, .svg, .webp", ""),
             "Code": (".py, .js, .ts, .java, .cpp, .c, .h, .cs, .go, .rs, .rb, .sh", ""),
@@ -351,27 +285,71 @@ class SearchUI:
         }
         if preset in presets:
             inc, exc = presets[preset]
-            self.include_var.set(inc)
-            self.exclude_var.set(exc)
+            self.include_entry.setText(inc)
+            self.exclude_entry.setText(exc)
             if preset == "Large Files (>10MB)":
-                self.min_size_var.set("10485760")
-                self.include_var.set("")
+                self.min_size_entry.setText("10485760")
+                self.include_entry.setText("")
 
     def _on_export_clicked(self):
         if self.on_export:
             self.on_export()
 
+    # --- Public API ---
+
+    def set_search_state(self, searching: bool):
+        """Update UI state for search/idle."""
+        self.search_button.setEnabled(not searching)
+        self.cancel_button.setEnabled(searching)
+
+        if not searching:
+            has_results = self.results_tree.topLevelItemCount() > 0
+            self.export_button.setEnabled(has_results)
+        else:
+            self.export_button.setEnabled(False)
+
+        if searching:
+            self.progress_bar.setRange(0, 0)
+        else:
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(0)
+
+    def clear_results(self):
+        """Clear the results tree."""
+        self.results_tree.clear()
+
+    def add_result(self, file_path: str, display_text: str = "", mod_time: str = ""):
+        """Add a result row to the tree."""
+        item = QTreeWidgetItem([file_path, display_text, mod_time])
+        self.results_tree.addTopLevelItem(item)
+
+    def update_status(self, message: str):
+        """Update status label text."""
+        self.status_label.setText(message)
+
+    def show_no_results_message(self):
+        """Show no results found message."""
+        QMessageBox.information(self, "No Matches", "No matches found.")
+
+    def show_error_message(self, title: str, message: str):
+        """Show error message."""
+        QMessageBox.critical(self, title, message)
+
     def export_results(self):
-        """Export current results to JSON or CSV."""
-        file_path = filedialog.asksaveasfilename(
-            defaultextension=".json",
-            filetypes=[("JSON", "*.json"), ("CSV", "*.csv"), ("Text", "*.txt")]
+        """Export current results to JSON, CSV, or text."""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Results",
+            "",
+            "JSON (*.json);;CSV (*.csv);;Text (*.txt)"
         )
         if not file_path:
             return
 
-        items = self.results_tree.get_children()
-        rows = [self.results_tree.item(item)['values'] for item in items]
+        rows = []
+        for i in range(self.results_tree.topLevelItemCount()):
+            item = self.results_tree.topLevelItem(i)
+            rows.append((item.text(0), item.text(1), item.text(2)))
 
         if file_path.endswith('.json'):
             data = [{"file_path": r[0], "matching_line": r[1], "last_modified": r[2]} for r in rows]
@@ -387,10 +365,10 @@ class SearchUI:
                 for r in rows:
                     f.write(f"{r[0]}\t{r[1]}\t{r[2]}\n")
 
-        messagebox.showinfo("Export", f"Exported {len(rows)} results to {file_path}")
+        QMessageBox.information(self, "Export", f"Exported {len(rows)} results to {file_path}")
 
     def set_search_history(self, history: list):
         self._search_history = history
 
     def get_search_term(self) -> str:
-        return self.search_var.get()
+        return self.search_entry.text()

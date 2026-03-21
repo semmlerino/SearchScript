@@ -2,8 +2,7 @@ import threading
 import queue
 import logging
 from typing import Optional, Dict, Any
-import tkinter as tk
-from tkinter import messagebox
+from PySide6.QtCore import QTimer
 
 from .search_engine import SearchEngine, SearchResult, SearchMode
 from .ui_components import SearchUI
@@ -13,13 +12,12 @@ from .file_utils import FileOperations, LoggingConfig
 class SearchController:
     """Main controller coordinating UI and search operations."""
 
-    def __init__(self, root: tk.Tk):
-        self.root = root
+    def __init__(self):
         self.logger = LoggingConfig.setup_logging()
 
         # Components
         self.search_engine = SearchEngine(self.logger)
-        self.ui = SearchUI(root, self.logger)
+        self.ui = SearchUI(self.logger)
         self.file_ops = FileOperations(self.logger)
 
         # Threading
@@ -70,7 +68,7 @@ class SearchController:
         self.search_thread.start()
 
         # Start monitoring results
-        self.root.after(100, self._process_results)
+        QTimer.singleShot(100, self._process_results)
 
     def _search_worker(self, search_params: Dict[str, Any]):
         """Worker thread for search operations."""
@@ -137,7 +135,7 @@ class SearchController:
 
         # Continue monitoring if thread is alive
         if self.search_thread and self.search_thread.is_alive():
-            self.root.after(100, self._process_results)
+            QTimer.singleShot(100, self._process_results)
         else:
             # Thread finished without sending completion message
             self._handle_search_complete([])
@@ -199,5 +197,4 @@ class SearchController:
     def run(self):
         """Start the application."""
         self.logger.info("Application started")
-        self.root.mainloop()
-        self.logger.info("Application closed")
+        self.ui.show()
