@@ -3,7 +3,7 @@
 
 from search_script.config import ConfigManager
 from search_script.file_utils import FileOperations, ValidationUtils
-from search_script.search_engine import SearchEngine
+from search_script.search_engine import SearchEngine, SearchMode
 
 
 def test_filename_search(tmp_path):
@@ -70,6 +70,31 @@ def test_validate_search_term():
 def test_validate_file_extensions():
     extensions = ValidationUtils.validate_file_extensions(["txt", ".py", " .log ", ""])
     assert extensions == [".txt", ".py", ".log"]
+
+
+def test_fuzzy_filename_search(tmp_path):
+    (tmp_path / "configuration.txt").write_text("data")
+    (tmp_path / "readme.md").write_text("info")
+
+    engine = SearchEngine()
+    # "confg" is a typo for "config" — fuzzy should match "configuration"
+    results = list(engine.search_files(
+        str(tmp_path), "confg", search_within_files=False, search_mode=SearchMode.FUZZY
+    ))
+    assert len(results) == 1
+    assert "configuration" in results[0].file_path
+
+
+def test_fuzzy_content_search(tmp_path):
+    test_file = tmp_path / "notes.txt"
+    test_file.write_text("authentication module\nlogging setup\ndata pipeline")
+
+    engine = SearchEngine()
+    results = list(engine.search_files(
+        str(tmp_path), "authenticaton", search_within_files=True, search_mode=SearchMode.FUZZY
+    ))
+    assert len(results) >= 1
+    assert results[0].line_number == 1
 
 
 def test_config_manager(tmp_path):

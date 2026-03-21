@@ -80,7 +80,7 @@ class SearchUI(QMainWindow):
 
         row.addWidget(QLabel("Mode:"))
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["substring", "glob", "regex"])
+        self.mode_combo.addItems(["substring", "glob", "regex", "fuzzy"])
         self.mode_combo.setCurrentText("substring")
         self.mode_combo.setFixedWidth(100)
         row.addWidget(self.mode_combo)
