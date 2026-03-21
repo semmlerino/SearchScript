@@ -7,7 +7,7 @@ Supports filename search and content search with file type filtering.
 """
 
 import tkinter as tk
-from search_controller import SearchController
+from .search_controller import SearchController
 
 
 def main():

@@ -5,23 +5,23 @@ from typing import Optional, Dict, Any
 import tkinter as tk
 from tkinter import messagebox
 
-from search_engine import SearchEngine, SearchResult, SearchMode
-from ui_components import SearchUI
-from file_utils import FileOperations, LoggingConfig
+from .search_engine import SearchEngine, SearchResult, SearchMode
+from .ui_components import SearchUI
+from .file_utils import FileOperations, LoggingConfig
 
 
 class SearchController:
     """Main controller coordinating UI and search operations."""
-    
+
     def __init__(self, root: tk.Tk):
         self.root = root
         self.logger = LoggingConfig.setup_logging()
-        
+
         # Components
         self.search_engine = SearchEngine(self.logger)
         self.ui = SearchUI(root, self.logger)
         self.file_ops = FileOperations(self.logger)
-        
+
         # Threading
         self.cancel_event = threading.Event()
         self.search_thread: Optional[threading.Thread] = None
@@ -30,9 +30,9 @@ class SearchController:
 
         # Setup callbacks
         self._setup_callbacks()
-        
+
         self.logger.info("SearchController initialized")
-    
+
     def _setup_callbacks(self):
         """Setup UI event callbacks."""
         self.ui.on_search_start = self._start_search
@@ -40,7 +40,7 @@ class SearchController:
         self.ui.on_result_double_click = self._open_file
         self.ui.on_open_containing_folder = self._open_containing_folder
         self.ui.on_export = self._export_results
-    
+
     def _start_search(self, search_params: Dict[str, Any]):
         """Start the search operation."""
         self.logger.info(f"Starting search with parameters: {search_params}")
@@ -56,11 +56,11 @@ class SearchController:
         self.ui.set_search_state(True)
         self.ui.clear_results()
         self.ui.update_status("Starting search...")
-        
+
         # Setup threading
         self.cancel_event.clear()
         self.result_queue = queue.Queue()
-        
+
         # Start search thread
         self.search_thread = threading.Thread(
             target=self._search_worker,
@@ -68,19 +68,19 @@ class SearchController:
             daemon=True
         )
         self.search_thread.start()
-        
+
         # Start monitoring results
         self.root.after(100, self._process_results)
-    
+
     def _search_worker(self, search_params: Dict[str, Any]):
         """Worker thread for search operations."""
         try:
             results = []
-            
+
             # Progress callback
             def progress_callback(message: str):
                 self.result_queue.put(("status", message))
-            
+
             # Convert search_mode string to enum
             mode_str = search_params.get('search_mode', 'substring')
             search_mode = SearchMode(mode_str)
@@ -103,23 +103,23 @@ class SearchController:
                 if self.cancel_event.is_set():
                     self.result_queue.put(("cancelled", f"Search cancelled. Found {len(results)} matches."))
                     return
-                
+
                 results.append(result)
-            
+
             # Send completion message
             self.result_queue.put(("done", results))
-            
+
         except Exception as e:
             error_msg = f"Search error: {str(e)}"
             self.result_queue.put(("error", error_msg))
             self.logger.error(error_msg)
-    
+
     def _process_results(self):
         """Process results from the search thread."""
         try:
             while True:
                 msg_type, data = self.result_queue.get_nowait()
-                
+
                 if msg_type == "done":
                     self._handle_search_complete(data)
                     return
@@ -131,61 +131,61 @@ class SearchController:
                 elif msg_type == "cancelled":
                     self._handle_search_cancelled(data)
                     return
-                    
+
         except queue.Empty:
             pass
-        
+
         # Continue monitoring if thread is alive
         if self.search_thread and self.search_thread.is_alive():
             self.root.after(100, self._process_results)
         else:
             # Thread finished without sending completion message
             self._handle_search_complete([])
-    
+
     def _handle_search_complete(self, results: list):
         """Handle search completion."""
         self.ui.set_search_state(False)
         self.ui.update_status("Search completed.")
-        
+
         if results:
             self._display_results(results)
             self.logger.info(f"Search completed with {len(results)} matches")
         else:
             self.ui.show_no_results_message()
             self.logger.info("Search completed with no matches")
-    
+
     def _handle_search_error(self, error_msg: str):
         """Handle search error."""
         self.ui.set_search_state(False)
         self.ui.update_status("Search failed.")
         self.ui.show_error_message("Search Error", error_msg)
         self.logger.error(error_msg)
-    
+
     def _handle_search_cancelled(self, message: str):
         """Handle search cancellation."""
         self.ui.set_search_state(False)
         self.ui.update_status(message)
         self.logger.info(message)
-    
+
     def _display_results(self, results: list):
         """Display search results in the UI."""
         for result in results:
             mod_time = self.file_ops.get_file_modification_time(result.file_path)
             self.ui.add_result(result.file_path, result.display_text, mod_time)
-        
+
         self.logger.info(f"Displayed {len(results)} results")
-    
+
     def _cancel_search(self):
         """Cancel the current search operation."""
         self.cancel_event.set()
         self.ui.update_status("Search cancellation requested.")
         self.logger.info("Search cancellation requested")
-    
+
     def _open_file(self, file_path: str):
         """Open a file from the results."""
         if not self.file_ops.open_file(file_path):
             self.ui.show_error_message("Error", f"Cannot open file: {file_path}")
-    
+
     def _open_containing_folder(self, file_path: str):
         """Open the containing folder for a file."""
         if not self.file_ops.open_containing_folder(file_path):

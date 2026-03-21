@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
-from config import SearchError, DirectoryError, FileAccessError, ValidationError
+from .config import SearchError, DirectoryError, FileAccessError, ValidationError
 
 
 @dataclass
@@ -43,7 +43,7 @@ class SearchEngine:
             '.mp3', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm',
             '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'
         }
-        
+
     def search_files(
         self,
         directory: str,
@@ -63,7 +63,7 @@ class SearchEngine:
     ) -> Generator[SearchResult, None, None]:
         """
         Search for files/content matching criteria.
-        
+
         Args:
             directory: Root directory to search
             search_term: Term to search for
@@ -72,10 +72,10 @@ class SearchEngine:
             search_within_files: If True, search file contents; if False, search filenames
             progress_callback: Callback function for progress updates
             cancel_event: Threading event to signal cancellation
-            
+
         Yields:
             SearchResult objects for each match found
-            
+
         Raises:
             DirectoryError: If directory doesn't exist or isn't accessible
             ValidationError: If search parameters are invalid
@@ -83,13 +83,13 @@ class SearchEngine:
         """
         # Validate inputs
         self._validate_search_params(directory, search_term)
-        
+
         include_types = [ext.lower() for ext in (include_types or [])]
         exclude_types = [ext.lower() for ext in (exclude_types or [])]
         files_processed = 0
-        
+
         self.logger.debug(f"Starting search in directory: {directory}")
-        
+
         root_depth = directory.rstrip(os.sep).count(os.sep)
         try:
             for root_dir, dirs, files in os.walk(directory):
@@ -136,7 +136,7 @@ class SearchEngine:
 
                     files_processed += 1
                     self._update_progress(files_processed, progress_callback)
-                    
+
         except PermissionError as e:
             raise DirectoryError(f"Permission denied accessing directory: {directory}")
         except FileNotFoundError as e:
@@ -144,25 +144,25 @@ class SearchEngine:
         except Exception as e:
             self.logger.error(f"Unexpected error during search: {e}")
             raise SearchError(f"Search operation failed: {str(e)}")
-    
+
     def _validate_search_params(self, directory: str, search_term: str):
         """Validate search parameters."""
         if not directory or not directory.strip():
             raise ValidationError("Directory path cannot be empty")
-        
+
         if not os.path.exists(directory):
             raise DirectoryError(f"Directory does not exist: {directory}")
-        
+
         if not os.path.isdir(directory):
             raise DirectoryError(f"Path is not a directory: {directory}")
-        
+
         if not search_term or not search_term.strip():
             raise ValidationError("Search term cannot be empty")
-    
+
     def _should_process_file(
-        self, 
-        file_lower: str, 
-        include_types: List[str], 
+        self,
+        file_lower: str,
+        include_types: List[str],
         exclude_types: List[str]
     ) -> bool:
         """Check if file should be processed based on type filters."""
@@ -170,13 +170,13 @@ class SearchEngine:
         file_ext = Path(file_lower).suffix.lower()
         if file_ext in self._binary_extensions:
             return False
-            
+
         if include_types and not any(file_lower.endswith(ext) for ext in include_types):
             return False
         if exclude_types and any(file_lower.endswith(ext) for ext in exclude_types):
             return False
         return True
-    
+
     def _matches_term(self, text: str, search_term: str, mode: SearchMode) -> bool:
         """Match text against search_term using the specified mode."""
         if mode == SearchMode.SUBSTRING:
@@ -239,17 +239,17 @@ class SearchEngine:
     ) -> Generator[SearchResult, None, None]:
         """Search within file content for the search term using optimized methods."""
         file_size = file_path.stat().st_size
-        
+
         # Skip empty files
         if file_size == 0:
             return
-        
+
         # Use memory mapping for large files (>1MB)
         if file_size > 1024 * 1024:
             yield from self._search_large_file(file_path, search_term, search_mode)
         else:
             yield from self._search_small_file(file_path, search_term, search_mode)
-    
+
     def _search_small_file(
         self,
         file_path: Path,
@@ -281,7 +281,7 @@ class SearchEngine:
             self.logger.debug(f"Skipping binary file: {file_path}")
         except Exception as e:
             raise FileAccessError(f"Error reading file {file_path}: {e}")
-    
+
     def _search_large_file(
         self,
         file_path: Path,
@@ -335,7 +335,7 @@ class SearchEngine:
             self.logger.debug(f"Skipping binary file: {file_path}")
         except Exception as e:
             raise FileAccessError(f"Error reading file {file_path}: {e}")
-    
+
     def _update_progress(self, files_processed: int, progress_callback):
         """Update progress if callback provided."""
         if progress_callback and files_processed % 10 == 0:

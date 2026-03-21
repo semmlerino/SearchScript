@@ -9,10 +9,10 @@ from typing import Optional
 
 class FileOperations:
     """Utility class for file operations."""
-    
+
     def __init__(self, logger: Optional[logging.Logger] = None):
         self.logger = logger or logging.getLogger(__name__)
-    
+
     def get_file_modification_time(self, file_path: str) -> str:
         """Get formatted modification time for a file."""
         try:
@@ -21,13 +21,13 @@ class FileOperations:
         except Exception as e:
             self.logger.error(f"Error getting modification time for {file_path}: {e}")
             return "N/A"
-    
+
     def open_file(self, file_path: str) -> bool:
         """Open file with default application."""
         if not os.path.exists(file_path):
             self.logger.warning(f"File does not exist: {file_path}")
             return False
-        
+
         try:
             if sys.platform.startswith('darwin'):
                 subprocess.call(('open', file_path))
@@ -35,22 +35,22 @@ class FileOperations:
                 os.startfile(file_path)
             elif os.name == 'posix':
                 subprocess.call(('xdg-open', file_path))
-            
+
             self.logger.info(f"Opened file: {file_path}")
             return True
         except Exception as e:
             self.logger.error(f"Error opening file {file_path}: {e}")
             return False
-    
+
     def open_containing_folder(self, file_path: str) -> bool:
         """Open the folder containing the specified file."""
         if not os.path.exists(file_path):
             self.logger.warning(f"File does not exist: {file_path}")
             return False
-        
+
         try:
             folder_path = os.path.dirname(file_path)
-            
+
             if sys.platform.startswith('darwin'):
                 subprocess.call(['open', folder_path])
                 self.logger.info(f"Opened folder on macOS: {folder_path}")
@@ -62,7 +62,7 @@ class FileOperations:
             elif os.name == 'posix':
                 subprocess.call(['xdg-open', folder_path])
                 self.logger.info(f"Opened folder on POSIX system: {folder_path}")
-            
+
             return True
         except Exception as e:
             self.logger.error(f"Error opening containing folder for {file_path}: {e}")
@@ -71,7 +71,7 @@ class FileOperations:
 
 class LoggingConfig:
     """Configuration for logging setup."""
-    
+
     @staticmethod
     def setup_logging(log_file: str = 'file_search.log', level: int = logging.DEBUG) -> logging.Logger:
         """Setup logging configuration."""
@@ -81,7 +81,7 @@ class LoggingConfig:
             format='%(asctime)s - %(levelname)s - %(message)s',
             filemode='a'
         )
-        
+
         logger = logging.getLogger(__name__)
         logger.info("Logging initialized")
         return logger
@@ -89,17 +89,17 @@ class LoggingConfig:
 
 class ValidationUtils:
     """Utility functions for input validation."""
-    
+
     @staticmethod
     def validate_directory(directory: str) -> bool:
         """Validate if directory exists and is accessible."""
         return os.path.exists(directory) and os.path.isdir(directory)
-    
+
     @staticmethod
     def validate_search_term(search_term: str) -> bool:
         """Validate search term is not empty."""
         return bool(search_term and search_term.strip())
-    
+
     @staticmethod
     def validate_file_extensions(extensions: list) -> list:
         """Validate and normalize file extensions."""

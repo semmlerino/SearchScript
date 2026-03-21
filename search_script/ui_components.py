@@ -11,7 +11,7 @@ class SearchUI:
     def __init__(self, root: tk.Tk, logger: Optional[logging.Logger] = None):
         self.root = root
         self.logger = logger or logging.getLogger(__name__)
-        
+
         # Variables
         self.dir_var = tk.StringVar()
         self.search_var = tk.StringVar()
@@ -19,7 +19,7 @@ class SearchUI:
         self.exclude_var = tk.StringVar()
         self.within_var = tk.BooleanVar()
         self.status_var = tk.StringVar()
-        
+
         self.mode_var = tk.StringVar(value="substring")
         self.depth_var = tk.StringVar()
         self.min_size_var = tk.StringVar()
@@ -35,36 +35,36 @@ class SearchUI:
 
         # Search history
         self._search_history: list = []
-        
+
         self._setup_ui()
-    
+
     def _setup_ui(self):
         """Initialize the UI components."""
         self.root.title("Enhanced File Search Tool")
         self.root.geometry("1200x700")
         self.root.resizable(True, True)
-        
+
         self._create_directory_frame()
         self._create_search_frame()
         self._create_options_frame()
         self._create_progress_frame()
         self._create_button_frame()
         self._create_results_frame()
-    
+
     def _create_directory_frame(self):
         """Create directory selection frame."""
         dir_frame = tk.Frame(self.root)
         dir_frame.pack(pady=10, padx=10, fill='x')
-        
+
         tk.Label(dir_frame, text="Directory:").pack(side=tk.LEFT)
         tk.Entry(dir_frame, textvariable=self.dir_var, width=80).pack(side=tk.LEFT, padx=5)
         tk.Button(dir_frame, text="Browse", command=self._browse_directory).pack(side=tk.LEFT)
-    
+
     def _create_search_frame(self):
         """Create search term frame."""
         search_frame = tk.Frame(self.root)
         search_frame.pack(pady=5, padx=10, fill='x')
-        
+
         tk.Label(search_frame, text="Search Term:").pack(side=tk.LEFT)
         self.search_entry = tk.Entry(search_frame, textvariable=self.search_var, width=80)
         self.search_entry.pack(side=tk.LEFT, padx=5)
@@ -86,30 +86,30 @@ class SearchUI:
         )
         self.preset_combo.pack(side=tk.LEFT, padx=5)
         self.preset_combo.bind("<<ComboboxSelected>>", self._apply_preset)
-    
+
     def _create_options_frame(self):
         """Create options frame."""
         options_frame = tk.Frame(self.root)
         options_frame.pack(pady=5, padx=10, fill='x')
-        
+
         tk.Checkbutton(
-            options_frame, 
-            text="Search within file contents", 
+            options_frame,
+            text="Search within file contents",
             variable=self.within_var
         ).pack(anchor='w')
-        
+
         tk.Label(
-            options_frame, 
+            options_frame,
             text="Include file types (e.g., .txt, .py):"
         ).pack(anchor='w', pady=(10, 0))
         tk.Entry(
-            options_frame, 
-            textvariable=self.include_var, 
+            options_frame,
+            textvariable=self.include_var,
             width=100
         ).pack(anchor='w', padx=5)
-        
+
         tk.Label(
-            options_frame, 
+            options_frame,
             text="Exclude file types (e.g., .log, .tmp):"
         ).pack(anchor='w', pady=(10, 0))
         tk.Entry(
@@ -132,39 +132,39 @@ class SearchUI:
         tk.Entry(adv_frame, textvariable=self.max_size_var, width=12).pack(side=tk.LEFT, padx=(5, 15))
 
         tk.Checkbutton(adv_frame, text="Match folder names", variable=self.match_folders_var).pack(side=tk.LEFT, padx=(15, 0))
-    
+
     def _create_progress_frame(self):
         """Create progress bar and status."""
         progress_frame = tk.Frame(self.root)
         progress_frame.pack(pady=10, padx=10, fill='x')
-        
+
         self.progress_bar = ttk.Progressbar(progress_frame, mode='indeterminate')
         self.progress_bar.pack(fill='x')
-        
+
         tk.Label(self.root, textvariable=self.status_var).pack(pady=(0, 10))
-    
+
     def _create_button_frame(self):
         """Create search and cancel buttons."""
         button_frame = tk.Frame(self.root)
         button_frame.pack(pady=5)
-        
+
         self.search_button = tk.Button(
-            button_frame, 
-            text="Search", 
+            button_frame,
+            text="Search",
             command=self._on_search_clicked,
-            bg="blue", 
-            fg="white", 
+            bg="blue",
+            fg="white",
             width=15
         )
         self.search_button.pack(side=tk.LEFT, padx=10)
-        
+
         self.cancel_button = tk.Button(
-            button_frame, 
-            text="Cancel", 
+            button_frame,
+            text="Cancel",
             command=self._on_cancel_clicked,
-            bg="red", 
-            fg="white", 
-            width=15, 
+            bg="red",
+            fg="white",
+            width=15,
             state=tk.DISABLED
         )
         self.cancel_button.pack(side=tk.LEFT, padx=10)
@@ -174,56 +174,56 @@ class SearchUI:
             width=15, state=tk.DISABLED
         )
         self.export_button.pack(side=tk.LEFT, padx=10)
-    
+
     def _create_results_frame(self):
         """Create results treeview."""
         results_frame = tk.Frame(self.root)
         results_frame.pack(pady=5, padx=10, fill='both', expand=True)
-        
+
         columns = ("File Path", "Matching Line", "Last Modified")
         self.results_tree = ttk.Treeview(results_frame, columns=columns, show='headings')
-        
+
         # Configure columns
         for col in columns:
             self.results_tree.heading(
-                col, 
-                text=col, 
+                col,
+                text=col,
                 command=lambda c=col: self._sort_column(c, False)
             )
-        
+
         self.results_tree.column("File Path", width=600)
         self.results_tree.column("Matching Line", width=400)
         self.results_tree.column("Last Modified", width=200)
         self.results_tree.pack(side='left', fill='both', expand=True)
-        
+
         # Scrollbar
         scrollbar = ttk.Scrollbar(results_frame, orient="vertical", command=self.results_tree.yview)
         self.results_tree.configure(yscroll=scrollbar.set)
         scrollbar.pack(side='right', fill='y')
-        
+
         # Event bindings
         self.results_tree.bind("<Double-1>", self._on_result_double_click)
         self.results_tree.bind("<Button-3>", self._show_context_menu)
-        
+
         # Context menu
         self.context_menu = tk.Menu(self.root, tearoff=0)
         self.context_menu.add_command(
-            label="Open Containing Folder", 
+            label="Open Containing Folder",
             command=self._on_open_containing_folder
         )
-    
+
     def _browse_directory(self):
         """Handle directory browse button click."""
         directory = filedialog.askdirectory()
         if directory:
             self.dir_var.set(directory)
             self.logger.info(f"Directory selected: {directory}")
-    
+
     def _on_search_clicked(self):
         """Handle search button click."""
         if not self._validate_inputs():
             return
-        
+
         if self.on_search_start:
             search_params = {
                 'directory': self.dir_var.get(),
@@ -238,45 +238,45 @@ class SearchUI:
                 'match_folders': self.match_folders_var.get(),
             }
             self.on_search_start(search_params)
-    
+
     def _on_cancel_clicked(self):
         """Handle cancel button click."""
         if messagebox.askyesno("Cancel Search", "Are you sure you want to cancel the search?"):
             if self.on_search_cancel:
                 self.on_search_cancel()
-    
+
     def _validate_inputs(self) -> bool:
         """Validate user inputs."""
         if not self.dir_var.get():
             messagebox.showwarning("Input Error", "Please select a directory to search.")
             return False
-        
+
         if not self.search_entry.get():
             messagebox.showwarning("Input Error", "Please enter a search term.")
             return False
-        
+
         return True
-    
+
     def _sort_column(self, col: str, reverse: bool):
         """Sort treeview column."""
         try:
             items = [(self.results_tree.set(k, col), k) for k in self.results_tree.get_children('')]
-            
+
             if col == "Last Modified":
                 items.sort(
-                    key=lambda t: datetime.strptime(t[0], "%Y-%m-%d %H:%M:%S") if t[0] != "" else datetime.min, 
+                    key=lambda t: datetime.strptime(t[0], "%Y-%m-%d %H:%M:%S") if t[0] != "" else datetime.min,
                     reverse=reverse
                 )
             else:
                 items.sort(key=lambda t: t[0].lower(), reverse=reverse)
-            
+
             for index, (val, k) in enumerate(items):
                 self.results_tree.move(k, '', index)
-            
+
             self.results_tree.heading(col, command=lambda: self._sort_column(col, not reverse))
         except Exception as e:
             self.logger.error(f"Error sorting column {col}: {e}")
-    
+
     def _on_result_double_click(self, event):
         """Handle result double-click."""
         if self.on_result_double_click:
@@ -285,14 +285,14 @@ class SearchUI:
                 item = self.results_tree.item(selected_item)
                 file_path = item['values'][0]
                 self.on_result_double_click(file_path)
-    
+
     def _show_context_menu(self, event):
         """Show context menu on right-click."""
         selected_item = self.results_tree.identify_row(event.y)
         if selected_item:
             self.results_tree.selection_set(selected_item)
             self.context_menu.post(event.x_root, event.y_root)
-    
+
     def _on_open_containing_folder(self):
         """Handle open containing folder menu item."""
         if self.on_open_containing_folder:
@@ -301,7 +301,7 @@ class SearchUI:
                 item = self.results_tree.item(selected_item)
                 file_path = item['values'][0]
                 self.on_open_containing_folder(file_path)
-    
+
     def set_search_state(self, searching: bool):
         """Update UI state for search/idle."""
         self.search_button.config(state=tk.DISABLED if searching else tk.NORMAL)
@@ -318,23 +318,23 @@ class SearchUI:
         else:
             self.progress_bar.stop()
             self.progress_bar.config(mode='determinate', value=0)
-    
+
     def clear_results(self):
         """Clear the results tree."""
         self.results_tree.delete(*self.results_tree.get_children())
-    
+
     def add_result(self, file_path: str, display_text: str = "", mod_time: str = ""):
         """Add a result to the tree."""
         self.results_tree.insert("", tk.END, values=(file_path, display_text, mod_time))
-    
+
     def update_status(self, message: str):
         """Update status message."""
         self.status_var.set(message)
-    
+
     def show_no_results_message(self):
         """Show no results found message."""
         messagebox.showinfo("No Matches", "No matches found.")
-    
+
     def show_error_message(self, title: str, message: str):
         """Show error message."""
         messagebox.showerror(title, message)
