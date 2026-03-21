@@ -1,12 +1,12 @@
-import threading
 import queue
-import logging
-from typing import Optional, Dict, Any
+import threading
+from typing import Any
+
 from PySide6.QtCore import QTimer
 
-from .search_engine import SearchEngine, SearchResult, SearchMode
-from .ui_components import SearchUI
 from .file_utils import FileOperations, LoggingConfig
+from .search_engine import SearchEngine, SearchMode
+from .ui_components import SearchUI
 
 
 class SearchController:
@@ -22,8 +22,8 @@ class SearchController:
 
         # Threading
         self.cancel_event = threading.Event()
-        self.search_thread: Optional[threading.Thread] = None
-        self.result_queue: Optional[queue.Queue] = None
+        self.search_thread: threading.Thread | None = None
+        self.result_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._search_history: list = []
 
         # Setup callbacks
@@ -39,7 +39,7 @@ class SearchController:
         self.ui.on_open_containing_folder = self._open_containing_folder
         self.ui.on_export = self._export_results
 
-    def _start_search(self, search_params: Dict[str, Any]):
+    def _start_search(self, search_params: dict[str, Any]):
         """Start the search operation."""
         self.logger.info(f"Starting search with parameters: {search_params}")
 
@@ -70,7 +70,7 @@ class SearchController:
         # Start monitoring results
         QTimer.singleShot(100, self._process_results)
 
-    def _search_worker(self, search_params: Dict[str, Any]):
+    def _search_worker(self, search_params: dict[str, Any]):
         """Worker thread for search operations."""
         try:
             results = []
@@ -99,7 +99,8 @@ class SearchController:
                 cancel_event=self.cancel_event
             ):
                 if self.cancel_event.is_set():
-                    self.result_queue.put(("cancelled", f"Search cancelled. Found {len(results)} matches."))
+                    msg = f"Search cancelled. Found {len(results)} matches."
+                    self.result_queue.put(("cancelled", msg))
                     return
 
                 results.append(result)
@@ -108,7 +109,7 @@ class SearchController:
             self.result_queue.put(("done", results))
 
         except Exception as e:
-            error_msg = f"Search error: {str(e)}"
+            error_msg = f"Search error: {e!s}"
             self.result_queue.put(("error", error_msg))
             self.logger.error(error_msg)
 
@@ -119,15 +120,15 @@ class SearchController:
                 msg_type, data = self.result_queue.get_nowait()
 
                 if msg_type == "done":
-                    self._handle_search_complete(data)
+                    self._handle_search_complete(list(data))  # type: ignore[arg-type]
                     return
                 elif msg_type == "status":
-                    self.ui.update_status(data)
+                    self.ui.update_status(str(data))
                 elif msg_type == "error":
-                    self._handle_search_error(data)
+                    self._handle_search_error(str(data))
                     return
                 elif msg_type == "cancelled":
-                    self._handle_search_cancelled(data)
+                    self._handle_search_cancelled(str(data))
                     return
 
         except queue.Empty:

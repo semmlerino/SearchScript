@@ -2,7 +2,9 @@
 """Enhanced File Search Tool - PySide6 GUI application."""
 
 import sys
+
 from PySide6.QtWidgets import QApplication
+
 from .search_controller import SearchController
 
 

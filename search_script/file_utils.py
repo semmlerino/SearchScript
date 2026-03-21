@@ -1,16 +1,14 @@
-import os
-import sys
-import subprocess
 import logging
+import os
+import subprocess
+import sys
 from datetime import datetime
-from pathlib import Path
-from typing import Optional
 
 
 class FileOperations:
     """Utility class for file operations."""
 
-    def __init__(self, logger: Optional[logging.Logger] = None):
+    def __init__(self, logger: logging.Logger | None = None):
         self.logger = logger or logging.getLogger(__name__)
 
     def get_file_modification_time(self, file_path: str) -> str:
@@ -58,7 +56,9 @@ class FileOperations:
                 file_path_norm = os.path.normpath(file_path)
                 command = f'explorer /select,"{file_path_norm}"'
                 subprocess.Popen(command, shell=True)
-                self.logger.info(f"Executed Windows Explorer command to select file: {file_path_norm}")
+                self.logger.info(
+                    f"Executed Windows Explorer command to select file: {file_path_norm}"
+                )
             elif os.name == 'posix':
                 subprocess.call(['xdg-open', folder_path])
                 self.logger.info(f"Opened folder on POSIX system: {folder_path}")
@@ -73,7 +73,9 @@ class LoggingConfig:
     """Configuration for logging setup."""
 
     @staticmethod
-    def setup_logging(log_file: str = 'file_search.log', level: int = logging.DEBUG) -> logging.Logger:
+    def setup_logging(
+        log_file: str = 'file_search.log', level: int = logging.DEBUG
+    ) -> logging.Logger:
         """Setup logging configuration."""
         logging.basicConfig(
             filename=log_file,

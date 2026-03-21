@@ -1,28 +1,40 @@
-import logging
-import json
 import csv
-from typing import Callable, Optional
+import json
+import logging
+from collections.abc import Callable
 
-from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QComboBox, QCheckBox, QPushButton,
-    QTreeWidget, QTreeWidgetItem, QProgressBar, QHeaderView,
-    QFileDialog, QMessageBox, QMenu
-)
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 class SearchUI(QMainWindow):
-    def __init__(self, logger: Optional[logging.Logger] = None):
+    def __init__(self, logger: logging.Logger | None = None):
         super().__init__()
         self.logger = logger or logging.getLogger(__name__)
 
         # Callbacks
-        self.on_search_start: Optional[Callable] = None
-        self.on_search_cancel: Optional[Callable] = None
-        self.on_result_double_click: Optional[Callable] = None
-        self.on_open_containing_folder: Optional[Callable] = None
-        self.on_export: Optional[Callable] = None
+        self.on_search_start: Callable | None = None
+        self.on_search_cancel: Callable | None = None
+        self.on_result_double_click: Callable | None = None
+        self.on_open_containing_folder: Callable | None = None
+        self.on_export: Callable | None = None
 
         # Search history
         self._search_history: list = []
@@ -211,16 +223,33 @@ class SearchUI(QMainWindow):
             return
 
         if self.on_search_start:
+            include_text = self.include_entry.text()
+            exclude_text = self.exclude_entry.text()
             search_params = {
                 'directory': self.dir_entry.text(),
                 'search_term': self.search_entry.text(),
-                'include_types': [ext.strip().lower() for ext in self.include_entry.text().split(",") if ext.strip()],
-                'exclude_types': [ext.strip().lower() for ext in self.exclude_entry.text().split(",") if ext.strip()],
+                'include_types': [
+                    ext.strip().lower() for ext in include_text.split(",")
+                    if ext.strip()
+                ],
+                'exclude_types': [
+                    ext.strip().lower() for ext in exclude_text.split(",")
+                    if ext.strip()
+                ],
                 'search_within_files': self.within_checkbox.isChecked(),
                 'search_mode': self.mode_combo.currentText(),
-                'max_depth': int(self.depth_entry.text()) if self.depth_entry.text().strip() else None,
-                'min_size': int(self.min_size_entry.text()) if self.min_size_entry.text().strip() else None,
-                'max_size': int(self.max_size_entry.text()) if self.max_size_entry.text().strip() else None,
+                'max_depth': (
+                    int(self.depth_entry.text())
+                    if self.depth_entry.text().strip() else None
+                ),
+                'min_size': (
+                    int(self.min_size_entry.text())
+                    if self.min_size_entry.text().strip() else None
+                ),
+                'max_size': (
+                    int(self.max_size_entry.text())
+                    if self.max_size_entry.text().strip() else None
+                ),
                 'match_folders': self.match_folders_checkbox.isChecked(),
             }
             self.on_search_start(search_params)
@@ -233,9 +262,8 @@ class SearchUI(QMainWindow):
             "Are you sure you want to cancel the search?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        if result == QMessageBox.StandardButton.Yes:
-            if self.on_search_cancel:
-                self.on_search_cancel()
+        if result == QMessageBox.StandardButton.Yes and self.on_search_cancel:
+            self.on_search_cancel()
 
     def _validate_inputs(self) -> bool:
         """Validate user inputs."""
@@ -349,7 +377,8 @@ class SearchUI(QMainWindow):
         rows = []
         for i in range(self.results_tree.topLevelItemCount()):
             item = self.results_tree.topLevelItem(i)
-            rows.append((item.text(0), item.text(1), item.text(2)))
+            if item is not None:
+                rows.append((item.text(0), item.text(1), item.text(2)))
 
         if file_path.endswith('.json'):
             data = [{"file_path": r[0], "matching_line": r[1], "last_modified": r[2]} for r in rows]

@@ -1,10 +1,9 @@
 """Configuration and settings management for the search application."""
 
 import json
-import os
-from dataclasses import dataclass, asdict
-from typing import List, Optional
 import logging
+import os
+from dataclasses import asdict, dataclass
 
 
 @dataclass
@@ -12,8 +11,8 @@ class SearchConfig:
     """Configuration settings for the search application."""
 
     # Default search settings
-    default_include_types: List[str] = None
-    default_exclude_types: List[str] = None
+    default_include_types: list[str] | None = None
+    default_exclude_types: list[str] | None = None
     default_search_within_files: bool = False
 
     # UI settings
@@ -26,11 +25,11 @@ class SearchConfig:
 
     # Search behavior
     default_search_mode: str = "substring"
-    search_history: List[str] = None  # last 10 searches
+    search_history: list[str] | None = None  # last 10 searches
     max_history_items: int = 10
 
     # Advanced filter defaults
-    default_max_depth: Optional[int] = None
+    default_max_depth: int | None = None
     default_match_folders: bool = False
 
     # Logging settings
@@ -58,7 +57,7 @@ class ConfigManager:
         """Load configuration from file or create default."""
         if os.path.exists(self.config_file):
             try:
-                with open(self.config_file, 'r') as f:
+                with open(self.config_file) as f:
                     data = json.load(f)
                 return SearchConfig(**data)
             except Exception as e:
@@ -69,7 +68,7 @@ class ConfigManager:
         self.save_config(config)
         return config
 
-    def save_config(self, config: Optional[SearchConfig] = None):
+    def save_config(self, config: SearchConfig | None = None):
         """Save configuration to file."""
         if config is None:
             config = self.config

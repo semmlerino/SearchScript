@@ -1,11 +1,9 @@
 """Tests for the search application components."""
 
-import os
-from pathlib import Path
 
-from search_script.search_engine import SearchEngine, SearchResult
-from search_script.file_utils import FileOperations, ValidationUtils
 from search_script.config import ConfigManager
+from search_script.file_utils import FileOperations, ValidationUtils
+from search_script.search_engine import SearchEngine
 
 
 def test_filename_search(tmp_path):
@@ -33,6 +31,7 @@ def test_content_search(tmp_path):
     results = list(engine.search_files(str(tmp_path), "search", search_within_files=True))
     assert len(results) == 1
     assert results[0].line_number == 3
+    assert results[0].line_content is not None
     assert "search" in results[0].line_content.lower()
 
 
