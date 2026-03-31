@@ -1,6 +1,5 @@
 """Tests for the search application components."""
 
-
 from search_script.config import ConfigManager
 from search_script.file_utils import FileOperations, ValidationUtils
 from search_script.search_engine import SearchEngine, SearchMode
@@ -40,9 +39,11 @@ def test_content_search_with_type_filter(tmp_path):
     (tmp_path / "notes.txt").write_text("search notes here")
 
     engine = SearchEngine()
-    results = list(engine.search_files(
-        str(tmp_path), "search", include_types=[".py"], search_within_files=True
-    ))
+    results = list(
+        engine.search_files(
+            str(tmp_path), "search", include_types=[".py"], search_within_files=True
+        )
+    )
     assert len(results) == 1
     assert results[0].file_path.endswith(".py")
 
@@ -78,9 +79,11 @@ def test_fuzzy_filename_search(tmp_path):
 
     engine = SearchEngine()
     # "confg" is a typo for "config" — fuzzy should match "configuration"
-    results = list(engine.search_files(
-        str(tmp_path), "confg", search_within_files=False, search_mode=SearchMode.FUZZY
-    ))
+    results = list(
+        engine.search_files(
+            str(tmp_path), "confg", search_within_files=False, search_mode=SearchMode.FUZZY
+        )
+    )
     assert len(results) == 1
     assert "configuration" in results[0].file_path
 
@@ -90,11 +93,22 @@ def test_fuzzy_content_search(tmp_path):
     test_file.write_text("authentication module\nlogging setup\ndata pipeline")
 
     engine = SearchEngine()
-    results = list(engine.search_files(
-        str(tmp_path), "authenticaton", search_within_files=True, search_mode=SearchMode.FUZZY
-    ))
+    results = list(
+        engine.search_files(
+            str(tmp_path), "authenticaton", search_within_files=True, search_mode=SearchMode.FUZZY
+        )
+    )
     assert len(results) >= 1
     assert results[0].line_number == 1
+
+
+def test_filename_search_binary_extension(tmp_path):
+    exr_file = tmp_path / "render.exr"
+    exr_file.write_bytes(b"\x00" * 10)
+    engine = SearchEngine()
+    results = list(engine.search_files(str(tmp_path), "render", search_within_files=False))
+    assert len(results) == 1
+    assert results[0].file_path.endswith(".exr")
 
 
 def test_config_manager(tmp_path):

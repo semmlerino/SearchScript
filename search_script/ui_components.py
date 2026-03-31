@@ -87,9 +87,9 @@ class SearchUI(QMainWindow):
 
         row.addWidget(QLabel("Preset:"))
         self.preset_combo = QComboBox()
-        self.preset_combo.addItems([
-            "", "Images", "Code", "Documents", "Videos", "Archives", "Large Files (>10MB)"
-        ])
+        self.preset_combo.addItems(
+            ["", "Images", "Code", "Documents", "Videos", "Archives", "Large Files (>10MB)"]
+        )
         self.preset_combo.setFixedWidth(160)
         self.preset_combo.currentTextChanged.connect(self._apply_preset)
         row.addWidget(self.preset_combo)
@@ -226,43 +226,32 @@ class SearchUI(QMainWindow):
             include_text = self.include_entry.text()
             exclude_text = self.exclude_entry.text()
             search_params = {
-                'directory': self.dir_entry.text(),
-                'search_term': self.search_entry.text(),
-                'include_types': [
-                    ext.strip().lower() for ext in include_text.split(",")
-                    if ext.strip()
+                "directory": self.dir_entry.text(),
+                "search_term": self.search_entry.text(),
+                "include_types": [
+                    ext.strip().lower() for ext in include_text.split(",") if ext.strip()
                 ],
-                'exclude_types': [
-                    ext.strip().lower() for ext in exclude_text.split(",")
-                    if ext.strip()
+                "exclude_types": [
+                    ext.strip().lower() for ext in exclude_text.split(",") if ext.strip()
                 ],
-                'search_within_files': self.within_checkbox.isChecked(),
-                'search_mode': self.mode_combo.currentText(),
-                'max_depth': (
-                    int(self.depth_entry.text())
-                    if self.depth_entry.text().strip() else None
+                "search_within_files": self.within_checkbox.isChecked(),
+                "search_mode": self.mode_combo.currentText(),
+                "max_depth": (
+                    int(self.depth_entry.text()) if self.depth_entry.text().strip() else None
                 ),
-                'min_size': (
-                    int(self.min_size_entry.text())
-                    if self.min_size_entry.text().strip() else None
+                "min_size": (
+                    int(self.min_size_entry.text()) if self.min_size_entry.text().strip() else None
                 ),
-                'max_size': (
-                    int(self.max_size_entry.text())
-                    if self.max_size_entry.text().strip() else None
+                "max_size": (
+                    int(self.max_size_entry.text()) if self.max_size_entry.text().strip() else None
                 ),
-                'match_folders': self.match_folders_checkbox.isChecked(),
+                "match_folders": self.match_folders_checkbox.isChecked(),
             }
             self.on_search_start(search_params)
 
     def _on_cancel_clicked(self):
         """Handle cancel button click."""
-        result = QMessageBox.question(
-            self,
-            "Cancel Search",
-            "Are you sure you want to cancel the search?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        if result == QMessageBox.StandardButton.Yes and self.on_search_cancel:
+        if self.on_search_cancel:
             self.on_search_cancel()
 
     def _validate_inputs(self) -> bool:
@@ -366,10 +355,7 @@ class SearchUI(QMainWindow):
     def export_results(self):
         """Export current results to JSON, CSV, or text."""
         file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export Results",
-            "",
-            "JSON (*.json);;CSV (*.csv);;Text (*.txt)"
+            self, "Export Results", "", "JSON (*.json);;CSV (*.csv);;Text (*.txt)"
         )
         if not file_path:
             return
@@ -380,17 +366,17 @@ class SearchUI(QMainWindow):
             if item is not None:
                 rows.append((item.text(0), item.text(1), item.text(2)))
 
-        if file_path.endswith('.json'):
+        if file_path.endswith(".json"):
             data = [{"file_path": r[0], "matching_line": r[1], "last_modified": r[2]} for r in rows]
-            with open(file_path, 'w') as f:
+            with open(file_path, "w") as f:
                 json.dump(data, f, indent=2)
-        elif file_path.endswith('.csv'):
-            with open(file_path, 'w', newline='') as f:
+        elif file_path.endswith(".csv"):
+            with open(file_path, "w", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow(["File Path", "Matching Line", "Last Modified"])
                 writer.writerows(rows)
         else:
-            with open(file_path, 'w') as f:
+            with open(file_path, "w") as f:
                 for r in rows:
                     f.write(f"{r[0]}\t{r[1]}\t{r[2]}\n")
 

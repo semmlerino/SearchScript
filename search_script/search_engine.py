@@ -3,6 +3,7 @@ import logging
 import mmap
 import os
 import re
+import types
 from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import datetime
@@ -40,12 +41,81 @@ class SearchEngine:
         self.logger = logger or logging.getLogger(__name__)
         self.max_workers = max_workers
         self._binary_extensions = {
-            '.exe', '.dll', '.so', '.dylib', '.bin', '.obj', '.o', '.a', '.lib',
-            '.zip', '.tar', '.gz', '.rar', '.7z', '.bz2', '.xz',
-            '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.svg', '.ico',
-            '.mp3', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm',
-            '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'
+            ".exe",
+            ".dll",
+            ".so",
+            ".dylib",
+            ".bin",
+            ".obj",
+            ".o",
+            ".a",
+            ".lib",
+            ".zip",
+            ".tar",
+            ".gz",
+            ".rar",
+            ".7z",
+            ".bz2",
+            ".xz",
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".gif",
+            ".bmp",
+            ".tiff",
+            ".svg",
+            ".ico",
+            ".mp3",
+            ".mp4",
+            ".avi",
+            ".mov",
+            ".wmv",
+            ".flv",
+            ".mkv",
+            ".webm",
+            ".pdf",
+            ".doc",
+            ".docx",
+            ".xls",
+            ".xlsx",
+            ".ppt",
+            ".pptx",
+            # VFX image formats
+            ".exr",
+            ".dpx",
+            ".hdr",
+            ".r3d",
+            ".ari",
+            ".braw",
+            # VFX scene and cache formats
+            ".abc",
+            ".usd",
+            ".usdc",
+            ".bgeo",
+            ".vdb",
+            ".ma",
+            ".mb",
+            # Houdini formats
+            ".hip",
+            ".hipnc",
+            # 3D interchange formats
+            ".fbx",
+            # Audio formats
+            ".wav",
+            ".aiff",
+            # Color/LUT formats
+            ".spi1d",
+            ".spi3d",
+            ".cube",
+            # Nuke compiled format
+            ".nknc",
         }
+        try:
+            import chardet  # pyright: ignore[reportMissingImports]
+
+            self._chardet: types.ModuleType | None = chardet
+        except ImportError:
+            self._chardet = None
 
     def search_files(
         self,
@@ -62,7 +132,7 @@ class SearchEngine:
         modified_before: datetime | None = None,
         match_folders: bool = False,
         progress_callback=None,
-        cancel_event=None
+        cancel_event=None,
     ) -> Generator[SearchResult, None, None]:
         """
         Search for files/content matching criteria.
@@ -115,7 +185,12 @@ class SearchEngine:
                     file_lower = file.lower()
 
                     # Apply file type filters
-                    if not self._should_process_file(file_lower, include_types, exclude_types):
+                    if not self._should_process_file(
+                        file_lower,
+                        include_types,
+                        exclude_types,
+                        search_within_files=search_within_files,
+                    ):
                         files_processed += 1
                         self._update_progress(files_processed, progress_callback)
                         continue
@@ -145,9 +220,7 @@ class SearchEngine:
                     self._update_progress(files_processed, progress_callback)
 
         except PermissionError as e:
-            raise DirectoryError(
-                f"Permission denied accessing directory: {directory}"
-            ) from e
+            raise DirectoryError(f"Permission denied accessing directory: {directory}") from e
         except FileNotFoundError as e:
             raise DirectoryError(f"Directory not found: {directory}") from e
         except Exception as e:
@@ -172,12 +245,13 @@ class SearchEngine:
         self,
         file_lower: str,
         include_types: list[str],
-        exclude_types: list[str]
+        exclude_types: list[str],
+        search_within_files: bool = True,
     ) -> bool:
         """Check if file should be processed based on type filters."""
-        # Skip known binary file types for content search
+        # Skip known binary file types for content search only
         file_ext = Path(file_lower).suffix.lower()
-        if file_ext in self._binary_extensions:
+        if search_within_files and file_ext in self._binary_extensions:
             return False
 
         if include_types and not any(file_lower.endswith(ext) for ext in include_types):
@@ -189,7 +263,7 @@ class SearchEngine:
         if mode == SearchMode.SUBSTRING:
             return search_term.lower() in text.lower()
         elif mode == SearchMode.GLOB:
-            has_glob_chars = any(c in search_term for c in '*?[]')
+            has_glob_chars = any(c in search_term for c in "*?[]")
             pattern = search_term if has_glob_chars else f"*{search_term}*"
             return fnmatch.fnmatch(text.lower(), pattern.lower())
         elif mode == SearchMode.REGEX:
@@ -207,7 +281,7 @@ class SearchEngine:
         min_size: int | None,
         max_size: int | None,
         modified_after: datetime | None,
-        modified_before: datetime | None
+        modified_before: datetime | None,
     ) -> bool:
         """Return True if the file passes all size/date filters."""
         try:
@@ -228,24 +302,20 @@ class SearchEngine:
 
     def _detect_encoding(self, file_path: Path) -> str:
         """Detect file encoding using chardet if available, otherwise fall back to utf-8."""
+        if self._chardet is None:
+            return "utf-8"
         try:
-            import chardet  # pyright: ignore[reportMissingImports]
-            with open(file_path, 'rb') as f:
+            with open(file_path, "rb") as f:
                 raw = f.read(4096)
-            detected = chardet.detect(raw)
-            if detected and detected.get('confidence', 0) > 0.5:
-                return detected['encoding'] or 'utf-8'
-        except ImportError:
-            pass
+            detected = self._chardet.detect(raw)
+            if detected and detected.get("confidence", 0) > 0.5:
+                return detected["encoding"] or "utf-8"
         except Exception:
             pass
-        return 'utf-8'
+        return "utf-8"
 
     def _search_file_content(
-        self,
-        file_path: Path,
-        search_term: str,
-        search_mode: SearchMode = SearchMode.SUBSTRING
+        self, file_path: Path, search_term: str, search_mode: SearchMode = SearchMode.SUBSTRING
     ) -> Generator[SearchResult, None, None]:
         """Search within file content for the search term using optimized methods."""
         file_size = file_path.stat().st_size
@@ -261,15 +331,12 @@ class SearchEngine:
             yield from self._search_small_file(file_path, search_term, search_mode)
 
     def _search_small_file(
-        self,
-        file_path: Path,
-        search_term: str,
-        search_mode: SearchMode = SearchMode.SUBSTRING
+        self, file_path: Path, search_term: str, search_mode: SearchMode = SearchMode.SUBSTRING
     ) -> Generator[SearchResult, None, None]:
         """Search small files using standard file reading."""
         try:
             encoding = self._detect_encoding(file_path)
-            with open(file_path, encoding=encoding, errors='ignore') as f:
+            with open(file_path, encoding=encoding, errors="ignore") as f:
                 lines = f.readlines()
             for i, line in enumerate(lines):
                 if self._matches_term(line, search_term, search_mode):
@@ -279,12 +346,7 @@ class SearchEngine:
                     next_line = lines[i + 1].strip() if i + 1 < len(lines) else None
                     if next_line and len(next_line) > 2000:
                         next_line = next_line[:2000] + "..."
-                    yield SearchResult(
-                        str(file_path),
-                        i + 1,
-                        line_content,
-                        next_line
-                    )
+                    yield SearchResult(str(file_path), i + 1, line_content, next_line)
         except PermissionError as e:
             raise FileAccessError(f"Permission denied reading file: {file_path}") from e
         except UnicodeDecodeError:
@@ -293,18 +355,14 @@ class SearchEngine:
             raise FileAccessError(f"Error reading file {file_path}: {e}") from e
 
     def _search_large_file(
-        self,
-        file_path: Path,
-        search_term: str,
-        search_mode: SearchMode = SearchMode.SUBSTRING
+        self, file_path: Path, search_term: str, search_mode: SearchMode = SearchMode.SUBSTRING
     ) -> Generator[SearchResult, None, None]:
         """Search large files using memory mapping for better performance."""
         try:
-            encoding = self._detect_encoding(file_path)
-            with open(file_path, encoding=encoding, errors='ignore') as f:
+            with open(file_path, "rb") as f:
                 try:
                     with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                        search_bytes = search_term.lower().encode('utf-8', errors='ignore')
+                        search_bytes = search_term.lower().encode("utf-8", errors="ignore")
 
                         # Find all occurrences
                         start = 0
@@ -314,26 +372,22 @@ class SearchEngine:
                                 break
 
                             # Find line boundaries
-                            line_start = mm.rfind(b'\n', 0, pos) + 1
-                            line_end = mm.find(b'\n', pos)
+                            line_start = mm.rfind(b"\n", 0, pos) + 1
+                            line_end = mm.find(b"\n", pos)
                             if line_end == -1:
                                 line_end = len(mm)
 
                             # Get line content and number
-                            line_content = mm[line_start:line_end].decode(
-                                'utf-8', errors='ignore'
-                            ).strip()
-                            line_num = mm[:line_start].count(b'\n') + 1
+                            line_content = (
+                                mm[line_start:line_end].decode("utf-8", errors="ignore").strip()
+                            )
+                            line_num = mm[:line_start].count(b"\n") + 1
 
                             # Truncate long lines
                             if len(line_content) > 2000:
                                 line_content = line_content[:2000] + "..."
 
-                            yield SearchResult(
-                                str(file_path),
-                                line_num,
-                                line_content
-                            )
+                            yield SearchResult(str(file_path), line_num, line_content)
 
                             start = pos + 1
 
