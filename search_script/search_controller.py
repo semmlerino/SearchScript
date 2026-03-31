@@ -123,7 +123,7 @@ class SearchController:
                     items_this_tick += 1
                 elif msg_type == "done":
                     self._drain_remaining_results()
-                    self._handle_search_complete(int(data))  # type: ignore[arg-type]
+                    self._handle_search_complete()
                     return
                 elif msg_type == "status":
                     self.ui.update_status(str(data))
@@ -140,10 +140,19 @@ class SearchController:
         if self.search_thread and self.search_thread.is_alive():
             QTimer.singleShot(100, self._process_results)
         else:
-            self._drain_remaining_results()
-            self._handle_search_complete(self.ui.results_tree.topLevelItemCount())
+            sentinel = self._drain_remaining_results()
+            if sentinel is not None:
+                msg_type, data = sentinel
+                if msg_type == "error":
+                    self._handle_search_error(str(data))
+                elif msg_type == "cancelled":
+                    self._handle_search_cancelled(str(data))
+                else:
+                    self._handle_search_complete()
+            else:
+                self._handle_search_complete()
 
-    def _handle_search_complete(self, count: int):
+    def _handle_search_complete(self):
         """Handle search completion."""
         self.ui.set_search_state(False)
         displayed = self.ui.results_tree.topLevelItemCount()
@@ -169,8 +178,8 @@ class SearchController:
         self.ui.update_status(f"Search cancelled. {displayed} results shown.")
         self.logger.info(message)
 
-    def _drain_remaining_results(self):
-        """Drain any remaining results from the queue into the UI."""
+    def _drain_remaining_results(self) -> tuple[str, object] | None:
+        """Drain remaining results from the queue. Returns first non-result sentinel found."""
         try:
             while True:
                 msg_type, data = self.result_queue.get_nowait()
@@ -179,8 +188,10 @@ class SearchController:
                     self.ui.add_result(  # type: ignore[union-attr]
                         result.file_path, result.display_text, result.formatted_mod_time
                     )
+                else:
+                    return (msg_type, data)
         except queue.Empty:
-            pass
+            return None
 
     def _cancel_search(self):
         """Cancel the current search operation."""

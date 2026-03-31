@@ -173,7 +173,6 @@ class SearchEngine:
 
         self.logger.debug(f"Starting search in directory: {directory}")
 
-        _checked_dirs: set[str] = set()
         try:
             for dir_path, entry in self._walk_scandir(
                 directory, max_depth, follow_symlinks, cancel_event
@@ -182,12 +181,13 @@ class SearchEngine:
                     self.logger.info(f"Search cancelled. Files processed: {files_processed}")
                     return
 
-                # Check folder name once per directory
-                if match_folders and not search_within_files and dir_path not in _checked_dirs:
-                    _checked_dirs.add(dir_path)
-                    folder_name = os.path.basename(dir_path)
-                    if self._matches_term(folder_name, search_term, search_mode):
-                        yield SearchResult(dir_path)
+                # Directory notification — check folder name match
+                if entry is None:
+                    if match_folders and not search_within_files:
+                        folder_name = os.path.basename(dir_path)
+                        if self._matches_term(folder_name, search_term, search_mode):
+                            yield SearchResult(dir_path)
+                    continue
 
                 file_name = entry.name
                 file_lower = file_name.lower()
@@ -430,14 +430,21 @@ class SearchEngine:
         cancel_event: threading.Event | None,
         _current_depth: int = 0,
         _seen_realpaths: set[str] | None = None,
-    ) -> Generator[tuple[str, os.DirEntry[str]], None, None]:
-        """Walk directory tree using os.scandir for cached d_type (no extra stat on Linux)."""
+    ) -> Generator[tuple[str, os.DirEntry[str] | None], None, None]:
+        """Walk directory tree using os.scandir for cached d_type (no extra stat on Linux).
+
+        Yields (dir_path, None) once per directory entered (for folder matching),
+        then (dir_path, entry) for each file in that directory.
+        """
         if max_depth is not None and _current_depth >= max_depth:
             return
         if cancel_event and cancel_event.is_set():
             return
         if _seen_realpaths is None:
             _seen_realpaths = {os.path.realpath(directory)}
+
+        # Yield directory notification (entry=None signals "entering directory")
+        yield (directory, None)
 
         try:
             with os.scandir(directory) as entries:
