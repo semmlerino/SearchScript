@@ -111,6 +111,27 @@ def test_filename_search_binary_extension(tmp_path):
     assert results[0].file_path.endswith(".exr")
 
 
+def test_search_results_carry_mod_time(tmp_path):
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("hello")
+    engine = SearchEngine()
+    results = list(engine.search_files(str(tmp_path), "test", search_within_files=False))
+    assert results[0].mod_time is not None
+    assert results[0].formatted_mod_time != "N/A"
+
+
+def test_symlink_cycle_detection(tmp_path):
+    subdir = tmp_path / "sub"
+    subdir.mkdir()
+    (subdir / "file.txt").write_text("content")
+    (subdir / "link").symlink_to(tmp_path)
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(str(tmp_path), "file", search_within_files=False, follow_symlinks=True)
+    )
+    assert len(results) == 1
+
+
 def test_config_manager(tmp_path):
     config_file = str(tmp_path / "test_config.json")
     manager = ConfigManager(config_file)

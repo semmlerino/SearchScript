@@ -141,6 +141,8 @@ class SearchUI(QMainWindow):
 
         self.match_folders_checkbox = QCheckBox("Match folder names")
         row.addWidget(self.match_folders_checkbox)
+        self.follow_symlinks_checkbox = QCheckBox("Follow symlinks")
+        row.addWidget(self.follow_symlinks_checkbox)
         row.addStretch()
 
         self._main_layout.addLayout(row)
@@ -246,6 +248,7 @@ class SearchUI(QMainWindow):
                     int(self.max_size_entry.text()) if self.max_size_entry.text().strip() else None
                 ),
                 "match_folders": self.match_folders_checkbox.isChecked(),
+                "follow_symlinks": self.follow_symlinks_checkbox.isChecked(),
             }
             self.on_search_start(search_params)
 

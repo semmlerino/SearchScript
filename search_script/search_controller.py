@@ -5,7 +5,7 @@ from typing import Any
 from PySide6.QtCore import QTimer
 
 from .file_utils import FileOperations, LoggingConfig
-from .search_engine import SearchEngine, SearchMode
+from .search_engine import SearchEngine, SearchMode, SearchResult
 from .ui_components import SearchUI
 
 
@@ -44,7 +44,7 @@ class SearchController:
         self.logger.info(f"Starting search with parameters: {search_params}")
 
         # Track search history
-        term = search_params['search_term']
+        term = search_params["search_term"]
         if term not in self._search_history:
             self._search_history.insert(0, term)
             self._search_history = self._search_history[:10]
@@ -61,9 +61,7 @@ class SearchController:
 
         # Start search thread
         self.search_thread = threading.Thread(
-            target=self._search_worker,
-            args=(search_params,),
-            daemon=True
+            target=self._search_worker, args=(search_params,), daemon=True
         )
         self.search_thread.start()
 
@@ -73,40 +71,37 @@ class SearchController:
     def _search_worker(self, search_params: dict[str, Any]):
         """Worker thread for search operations."""
         try:
-            results = []
+            count = 0
 
-            # Progress callback
             def progress_callback(message: str):
                 self.result_queue.put(("status", message))
 
-            # Convert search_mode string to enum
-            mode_str = search_params.get('search_mode', 'substring')
+            mode_str = search_params.get("search_mode", "substring")
             search_mode = SearchMode(mode_str)
 
-            # Perform search
             for result in self.search_engine.search_files(
-                directory=search_params['directory'],
-                search_term=search_params['search_term'],
-                include_types=search_params['include_types'],
-                exclude_types=search_params['exclude_types'],
-                search_within_files=search_params['search_within_files'],
+                directory=search_params["directory"],
+                search_term=search_params["search_term"],
+                include_types=search_params["include_types"],
+                exclude_types=search_params["exclude_types"],
+                search_within_files=search_params["search_within_files"],
                 search_mode=search_mode,
-                max_depth=search_params.get('max_depth'),
-                min_size=search_params.get('min_size'),
-                max_size=search_params.get('max_size'),
-                match_folders=search_params.get('match_folders', False),
+                max_depth=search_params.get("max_depth"),
+                min_size=search_params.get("min_size"),
+                max_size=search_params.get("max_size"),
+                match_folders=search_params.get("match_folders", False),
+                follow_symlinks=search_params.get("follow_symlinks", False),
                 progress_callback=progress_callback,
-                cancel_event=self.cancel_event
+                cancel_event=self.cancel_event,
             ):
                 if self.cancel_event.is_set():
-                    msg = f"Search cancelled. Found {len(results)} matches."
+                    msg = f"Search cancelled. Found {count} matches."
                     self.result_queue.put(("cancelled", msg))
                     return
+                self.result_queue.put(("result", result))
+                count += 1
 
-                results.append(result)
-
-            # Send completion message
-            self.result_queue.put(("done", results))
+            self.result_queue.put(("done", count))
 
         except Exception as e:
             error_msg = f"Search error: {e!s}"
@@ -116,11 +111,19 @@ class SearchController:
     def _process_results(self):
         """Process results from the search thread."""
         try:
-            while True:
+            items_this_tick = 0
+            while items_this_tick < 200:
                 msg_type, data = self.result_queue.get_nowait()
 
-                if msg_type == "done":
-                    self._handle_search_complete(list(data))  # type: ignore[arg-type]
+                if msg_type == "result":
+                    result: SearchResult = data  # type: ignore[assignment]
+                    self.ui.add_result(  # type: ignore[union-attr]
+                        result.file_path, result.display_text, result.formatted_mod_time
+                    )
+                    items_this_tick += 1
+                elif msg_type == "done":
+                    self._drain_remaining_results()
+                    self._handle_search_complete(int(data))  # type: ignore[arg-type]
                     return
                 elif msg_type == "status":
                     self.ui.update_status(str(data))
@@ -128,27 +131,26 @@ class SearchController:
                     self._handle_search_error(str(data))
                     return
                 elif msg_type == "cancelled":
+                    self._drain_remaining_results()
                     self._handle_search_cancelled(str(data))
                     return
-
         except queue.Empty:
             pass
 
-        # Continue monitoring if thread is alive
         if self.search_thread and self.search_thread.is_alive():
             QTimer.singleShot(100, self._process_results)
         else:
-            # Thread finished without sending completion message
-            self._handle_search_complete([])
+            self._drain_remaining_results()
+            self._handle_search_complete(self.ui.results_tree.topLevelItemCount())
 
-    def _handle_search_complete(self, results: list):
+    def _handle_search_complete(self, count: int):
         """Handle search completion."""
         self.ui.set_search_state(False)
+        displayed = self.ui.results_tree.topLevelItemCount()
         self.ui.update_status("Search completed.")
 
-        if results:
-            self._display_results(results)
-            self.logger.info(f"Search completed with {len(results)} matches")
+        if displayed > 0:
+            self.logger.info(f"Search completed with {displayed} matches")
         else:
             self.ui.show_no_results_message()
             self.logger.info("Search completed with no matches")
@@ -163,16 +165,22 @@ class SearchController:
     def _handle_search_cancelled(self, message: str):
         """Handle search cancellation."""
         self.ui.set_search_state(False)
-        self.ui.update_status(message)
+        displayed = self.ui.results_tree.topLevelItemCount()
+        self.ui.update_status(f"Search cancelled. {displayed} results shown.")
         self.logger.info(message)
 
-    def _display_results(self, results: list):
-        """Display search results in the UI."""
-        for result in results:
-            mod_time = self.file_ops.get_file_modification_time(result.file_path)
-            self.ui.add_result(result.file_path, result.display_text, mod_time)
-
-        self.logger.info(f"Displayed {len(results)} results")
+    def _drain_remaining_results(self):
+        """Drain any remaining results from the queue into the UI."""
+        try:
+            while True:
+                msg_type, data = self.result_queue.get_nowait()
+                if msg_type == "result":
+                    result: SearchResult = data  # type: ignore[assignment]
+                    self.ui.add_result(  # type: ignore[union-attr]
+                        result.file_path, result.display_text, result.formatted_mod_time
+                    )
+        except queue.Empty:
+            pass
 
     def _cancel_search(self):
         """Cancel the current search operation."""

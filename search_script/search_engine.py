@@ -3,6 +3,7 @@ import logging
 import mmap
 import os
 import re
+import threading
 import types
 from collections.abc import Generator
 from dataclasses import dataclass
@@ -21,12 +22,19 @@ class SearchResult:
     line_number: int | None = None
     line_content: str | None = None
     next_line: str | None = None
+    mod_time: float | None = None
 
     @property
     def display_text(self) -> str:
         if self.line_number and self.line_content:
             return f"{self.line_number}: {self.line_content}"
         return ""
+
+    @property
+    def formatted_mod_time(self) -> str:
+        if self.mod_time is not None:
+            return datetime.fromtimestamp(self.mod_time).strftime("%Y-%m-%d %H:%M:%S")
+        return "N/A"
 
 
 class SearchMode(Enum):
@@ -131,6 +139,7 @@ class SearchEngine:
         modified_after: datetime | None = None,
         modified_before: datetime | None = None,
         match_folders: bool = False,
+        follow_symlinks: bool = False,
         progress_callback=None,
         cancel_event=None,
     ) -> Generator[SearchResult, None, None]:
@@ -143,6 +152,7 @@ class SearchEngine:
             include_types: File extensions to include (e.g., ['.txt', '.py'])
             exclude_types: File extensions to exclude
             search_within_files: If True, search file contents; if False, search filenames
+            follow_symlinks: If True, follow symbolic links during traversal
             progress_callback: Callback function for progress updates
             cancel_event: Threading event to signal cancellation
 
@@ -163,61 +173,71 @@ class SearchEngine:
 
         self.logger.debug(f"Starting search in directory: {directory}")
 
-        root_depth = directory.rstrip(os.sep).count(os.sep)
+        _checked_dirs: set[str] = set()
         try:
-            for root_dir, dirs, files in os.walk(directory):
-                current_depth = root_dir.rstrip(os.sep).count(os.sep) - root_depth
-                if max_depth is not None and current_depth >= max_depth:
-                    dirs.clear()  # Don't descend further
+            for dir_path, entry in self._walk_scandir(
+                directory, max_depth, follow_symlinks, cancel_event
+            ):
+                if cancel_event and cancel_event.is_set():
+                    self.logger.info(f"Search cancelled. Files processed: {files_processed}")
+                    return
+
+                # Check folder name once per directory
+                if match_folders and not search_within_files and dir_path not in _checked_dirs:
+                    _checked_dirs.add(dir_path)
+                    folder_name = os.path.basename(dir_path)
+                    if self._matches_term(folder_name, search_term, search_mode):
+                        yield SearchResult(dir_path)
+
+                file_name = entry.name
+                file_lower = file_name.lower()
+
+                # Apply file type filters
+                if not self._should_process_file(
+                    file_lower,
+                    include_types,
+                    exclude_types,
+                    search_within_files=search_within_files,
+                ):
+                    files_processed += 1
+                    self._update_progress(files_processed, dir_path, progress_callback)
                     continue
 
-                if match_folders and not search_within_files:
-                    folder_name = os.path.basename(root_dir)
-                    if self._matches_term(folder_name, search_term, search_mode):
-                        yield SearchResult(root_dir)
-
-                for file in files:
-                    if cancel_event and cancel_event.is_set():
-                        self.logger.info(f"Search cancelled. Files processed: {files_processed}")
-                        return
-
-                    file_path = Path(root_dir) / file
-                    file_lower = file.lower()
-
-                    # Apply file type filters
-                    if not self._should_process_file(
-                        file_lower,
-                        include_types,
-                        exclude_types,
-                        search_within_files=search_within_files,
-                    ):
-                        files_processed += 1
-                        self._update_progress(files_processed, progress_callback)
-                        continue
-
-                    # Apply size/date filters
-                    if not self._check_file_filters(
-                        file_path, min_size, max_size, modified_after, modified_before
-                    ):
-                        files_processed += 1
-                        self._update_progress(files_processed, progress_callback)
-                        continue
-
-                    # Perform search
-                    try:
-                        if search_within_files:
-                            yield from self._search_file_content(
-                                file_path, search_term, search_mode
-                            )
-                        else:
-                            if self._matches_term(file, search_term, search_mode):
-                                yield SearchResult(str(file_path))
-                    except FileAccessError as e:
-                        self.logger.warning(f"Skipping file due to access error: {e}")
-                        continue
-
+                # Single stat call per file
+                try:
+                    entry_stat = entry.stat(follow_symlinks=follow_symlinks)
+                except OSError:
                     files_processed += 1
-                    self._update_progress(files_processed, progress_callback)
+                    self._update_progress(files_processed, dir_path, progress_callback)
+                    continue
+
+                # Apply size/date filters using the stat we already have
+                if not self._check_file_filters_with_stat(
+                    entry_stat, min_size, max_size, modified_after, modified_before
+                ):
+                    files_processed += 1
+                    self._update_progress(files_processed, dir_path, progress_callback)
+                    continue
+
+                file_path = Path(entry.path)
+
+                # Perform search
+                try:
+                    if search_within_files:
+                        for result in self._search_file_content(
+                            file_path, search_term, search_mode, file_size=entry_stat.st_size
+                        ):
+                            result.mod_time = entry_stat.st_mtime
+                            yield result
+                    else:
+                        if self._matches_term(file_name, search_term, search_mode):
+                            yield SearchResult(str(file_path), mod_time=entry_stat.st_mtime)
+                except FileAccessError as e:
+                    self.logger.warning(f"Skipping file due to access error: {e}")
+                    continue
+
+                files_processed += 1
+                self._update_progress(files_processed, dir_path, progress_callback)
 
         except PermissionError as e:
             raise DirectoryError(f"Permission denied accessing directory: {directory}") from e
@@ -275,29 +295,25 @@ class SearchEngine:
             return fuzz.partial_ratio(search_term.lower(), text.lower()) >= 70
         return False
 
-    def _check_file_filters(
+    def _check_file_filters_with_stat(
         self,
-        file_path: Path,
+        stat_result: os.stat_result,
         min_size: int | None,
         max_size: int | None,
         modified_after: datetime | None,
         modified_before: datetime | None,
     ) -> bool:
-        """Return True if the file passes all size/date filters."""
-        try:
-            stat = file_path.stat()
-            if min_size is not None and stat.st_size < min_size:
-                return False
-            if max_size is not None and stat.st_size > max_size:
-                return False
-            if modified_after is not None or modified_before is not None:
-                mod_time = datetime.fromtimestamp(stat.st_mtime)
-                if modified_after and mod_time < modified_after:
-                    return False
-                if modified_before and mod_time > modified_before:
-                    return False
-        except OSError:
+        """Return True if the file passes all size/date filters (using pre-fetched stat)."""
+        if min_size is not None and stat_result.st_size < min_size:
             return False
+        if max_size is not None and stat_result.st_size > max_size:
+            return False
+        if modified_after is not None or modified_before is not None:
+            mod_time = datetime.fromtimestamp(stat_result.st_mtime)
+            if modified_after and mod_time < modified_after:
+                return False
+            if modified_before and mod_time > modified_before:
+                return False
         return True
 
     def _detect_encoding(self, file_path: Path) -> str:
@@ -315,16 +331,15 @@ class SearchEngine:
         return "utf-8"
 
     def _search_file_content(
-        self, file_path: Path, search_term: str, search_mode: SearchMode = SearchMode.SUBSTRING
+        self,
+        file_path: Path,
+        search_term: str,
+        search_mode: SearchMode = SearchMode.SUBSTRING,
+        file_size: int = 0,
     ) -> Generator[SearchResult, None, None]:
         """Search within file content for the search term using optimized methods."""
-        file_size = file_path.stat().st_size
-
-        # Skip empty files
         if file_size == 0:
             return
-
-        # Use memory mapping for large files (>1MB)
         if file_size > 1024 * 1024:
             yield from self._search_large_file(file_path, search_term, search_mode)
         else:
@@ -402,7 +417,56 @@ class SearchEngine:
         except Exception as e:
             raise FileAccessError(f"Error reading file {file_path}: {e}") from e
 
-    def _update_progress(self, files_processed: int, progress_callback):
+    def _update_progress(self, files_processed: int, current_dir: str, progress_callback):
         """Update progress if callback provided."""
         if progress_callback and files_processed % 10 == 0:
-            progress_callback(f"Files processed: {files_processed}")
+            progress_callback(f"Scanning: {current_dir} ({files_processed} files)")
+
+    def _walk_scandir(
+        self,
+        directory: str,
+        max_depth: int | None,
+        follow_symlinks: bool,
+        cancel_event: threading.Event | None,
+        _current_depth: int = 0,
+        _seen_realpaths: set[str] | None = None,
+    ) -> Generator[tuple[str, os.DirEntry[str]], None, None]:
+        """Walk directory tree using os.scandir for cached d_type (no extra stat on Linux)."""
+        if max_depth is not None and _current_depth >= max_depth:
+            return
+        if cancel_event and cancel_event.is_set():
+            return
+        if _seen_realpaths is None:
+            _seen_realpaths = {os.path.realpath(directory)}
+
+        try:
+            with os.scandir(directory) as entries:
+                subdirs: list[os.DirEntry[str]] = []
+                for entry in entries:
+                    if cancel_event and cancel_event.is_set():
+                        return
+                    try:
+                        if entry.is_file(follow_symlinks=follow_symlinks):
+                            yield (directory, entry)
+                        elif entry.is_dir(follow_symlinks=follow_symlinks):
+                            subdirs.append(entry)
+                    except OSError:
+                        continue
+        except (PermissionError, OSError):
+            return
+
+        for subdir in subdirs:
+            subdir_path = subdir.path
+            if follow_symlinks:
+                real = os.path.realpath(subdir_path)
+                if real in _seen_realpaths:
+                    continue
+                _seen_realpaths.add(real)
+            yield from self._walk_scandir(
+                subdir_path,
+                max_depth,
+                follow_symlinks,
+                cancel_event,
+                _current_depth + 1,
+                _seen_realpaths,
+            )
