@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .search_engine import RAPIDFUZZ_AVAILABLE
+
 
 class SearchUI(QMainWindow):
     def __init__(self, logger: logging.Logger | None = None):
@@ -80,7 +82,10 @@ class SearchUI(QMainWindow):
 
         row.addWidget(QLabel("Mode:"))
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["substring", "glob", "regex", "fuzzy"])
+        modes = ["substring", "glob", "regex"]
+        if RAPIDFUZZ_AVAILABLE:
+            modes.append("fuzzy")
+        self.mode_combo.addItems(modes)
         self.mode_combo.setCurrentText("substring")
         self.mode_combo.setFixedWidth(100)
         row.addWidget(self.mode_combo)

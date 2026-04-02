@@ -11,7 +11,12 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
-from rapidfuzz import fuzz
+try:
+    from rapidfuzz import fuzz
+
+    RAPIDFUZZ_AVAILABLE = True
+except ImportError:
+    RAPIDFUZZ_AVAILABLE = False
 
 from .config import DirectoryError, FileAccessError, SearchError, ValidationError
 
@@ -292,7 +297,9 @@ class SearchEngine:
             except re.error:
                 return False
         elif mode == SearchMode.FUZZY:
-            return fuzz.partial_ratio(search_term.lower(), text.lower()) >= 70
+            if not RAPIDFUZZ_AVAILABLE:
+                return False
+            return fuzz.partial_ratio(search_term.lower(), text.lower()) >= 70  # pyright: ignore[reportPossiblyUnboundVariable]
         return False
 
     def _check_file_filters_with_stat(
