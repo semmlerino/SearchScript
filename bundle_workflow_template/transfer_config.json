@@ -1,0 +1,46 @@
+{
+  "include_patterns": [
+    "*.py",
+    "*.toml",
+    "*.json",
+    "*.yml",
+    "*.yaml",
+    "*.ini",
+    "*.cfg"
+  ],
+  "exclude_patterns": [
+    "test_*.py",
+    "*_test.py",
+    "CLAUDE.md",
+    "bundle_app.py",
+    "transfer_cli.py",
+    "decode_app.py",
+    "transfer_config.json",
+    "*.log",
+    "*.tmp",
+    "*.bak",
+    "encoded_app_*.txt",
+    "encoded_app_*.json"
+  ],
+  "exclude_dirs": [
+    "tests",
+    "test",
+    "__pycache__",
+    ".git",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".serena",
+    "venv",
+    "env",
+    ".venv",
+    "archive",
+    "htmlcov",
+    "encoded_releases",
+    ".post-commit-output",
+    "bundle_workflow_template",
+    "deploy"
+  ],
+  "max_file_size_mb": 10,
+  "chunk_size_kb": 5120,
+  "output_dir": "encoded_releases"
+}

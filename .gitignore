@@ -6,3 +6,4 @@ dist/
 .venv/
 search_config.json
 encoded_releases/
+.post-commit-output/

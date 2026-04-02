@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+
+# Generic post-commit hook for the portable encoded-bundle workflow.
+# Copy this file to .git/hooks/post-commit in the target repository.
+
+PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+WORKFLOW_DIR_NAME="${BUNDLE_WORKFLOW_DIR:-bundle_workflow_template}"
+WORKFLOW_DIR="$PROJECT_ROOT/$WORKFLOW_DIR_NAME"
+HOOK_OUTPUT_DIR="$PROJECT_ROOT/.post-commit-output"
+PROJECT_NAME="${BUNDLE_PROJECT_NAME:-$(basename "$PROJECT_ROOT")}"
+BUNDLE_BASENAME="${BUNDLE_BASENAME:-${PROJECT_NAME}_latest}"
+ENCODED_RELEASE_BRANCH="${ENCODED_RELEASE_BRANCH:-encoded-releases}"
+CONFIG_PATH="${BUNDLE_CONFIG_PATH:-$WORKFLOW_DIR/transfer_config.json}"
+
+detect_python() {
+    if [ -n "${BUNDLE_PYTHON:-}" ]; then
+        printf '%s\n' "$BUNDLE_PYTHON"
+        return 0
+    fi
+    if [ -x "$PROJECT_ROOT/.venv/bin/python3" ]; then
+        printf '%s\n' "$PROJECT_ROOT/.venv/bin/python3"
+        return 0
+    fi
+    if [ -x "$PROJECT_ROOT/.venv/bin/python" ]; then
+        printf '%s\n' "$PROJECT_ROOT/.venv/bin/python"
+        return 0
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        command -v python3
+        return 0
+    fi
+    if command -v python >/dev/null 2>&1; then
+        command -v python
+        return 0
+    fi
+    printf '\n'
+}
+
+run_optional_check() {
+    tool_name="$1"
+    log_name="$2"
+    shift 2
+
+    if ! command -v "$tool_name" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    printf 'Running %s...\n' "$tool_name" > "$HOOK_OUTPUT_DIR/$log_name"
+    (
+        cd "$PROJECT_ROOT" || exit 1
+        "$@"
+    ) >> "$HOOK_OUTPUT_DIR/$log_name" 2>&1
+    check_exit=$?
+    if [ $check_exit -eq 0 ]; then
+        printf 'PASS: %s completed successfully\n' "$tool_name" >> "$HOOK_OUTPUT_DIR/$log_name"
+    else
+        printf 'WARN: %s exited with code %s\n' "$tool_name" "$check_exit" >> "$HOOK_OUTPUT_DIR/$log_name"
+    fi
+}
+
+mkdir -p "$HOOK_OUTPUT_DIR"
+
+CURRENT_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+COMMIT_MSG="$(git log -1 --pretty=format:'%s' 2>/dev/null || echo unknown)"
+AUTHOR_LINE="$(git log -1 --pretty=format:'%an <%ae>' 2>/dev/null || echo unknown)"
+
+{
+    printf 'Post-commit hook executed at %s\n' "$(date)"
+    printf 'Commit: %s\n' "$CURRENT_COMMIT"
+    printf 'Branch: %s\n' "$CURRENT_BRANCH"
+    printf 'Author: %s\n' "$AUTHOR_LINE"
+    printf 'Message: %s\n' "$COMMIT_MSG"
+    printf 'Workflow dir: %s\n' "$WORKFLOW_DIR"
+    printf 'Bundle basename: %s\n' "$BUNDLE_BASENAME"
+    printf 'Encoded release branch: %s\n' "$ENCODED_RELEASE_BRANCH"
+} > "$HOOK_OUTPUT_DIR/info.txt"
+
+PYTHON_BIN="$(detect_python)"
+
+if [ ! -f "$WORKFLOW_DIR/bundle_app.py" ]; then
+    printf 'SKIP: missing bundle_app.py at %s\n' "$WORKFLOW_DIR/bundle_app.py" > "$HOOK_OUTPUT_DIR/bundle.txt"
+    exit 0
+fi
+
+if [ ! -f "$CONFIG_PATH" ]; then
+    printf 'SKIP: missing transfer config at %s\n' "$CONFIG_PATH" > "$HOOK_OUTPUT_DIR/bundle.txt"
+    exit 0
+fi
+
+if [ -z "$PYTHON_BIN" ]; then
+    printf 'SKIP: no Python interpreter found\n' > "$HOOK_OUTPUT_DIR/bundle.txt"
+    exit 0
+fi
+
+run_optional_check ruff ruff-check.txt ruff check .
+run_optional_check basedpyright type-check.txt basedpyright
+run_optional_check deptry deptry-check.txt deptry .
+
+printf 'Creating encoded bundle...\n' > "$HOOK_OUTPUT_DIR/bundle.txt"
+
+(
+    cd "$PROJECT_ROOT" || exit 1
+    "$PYTHON_BIN" "$WORKFLOW_DIR/bundle_app.py" -c "$CONFIG_PATH"
+) >> "$HOOK_OUTPUT_DIR/bundle.txt" 2>&1
+BUNDLE_EXIT=$?
+
+if [ $BUNDLE_EXIT -ne 0 ]; then
+    printf 'WARN: bundle creation failed (exit code: %s)\n' "$BUNDLE_EXIT" >> "$HOOK_OUTPUT_DIR/bundle.txt"
+    exit 0
+fi
+
+printf 'PASS: bundle created successfully\n' >> "$HOOK_OUTPUT_DIR/bundle.txt"
+
+LATEST_BUNDLE="$(cd "$PROJECT_ROOT" && ls -t encoded_app_*.txt 2>/dev/null | head -1)"
+LATEST_METADATA="$(cd "$PROJECT_ROOT" && ls -t encoded_app_*.json 2>/dev/null | head -1)"
+OUTPUT_DIR="$PROJECT_ROOT/encoded_releases"
+TARGET_BUNDLE="$OUTPUT_DIR/${BUNDLE_BASENAME}.txt"
+TARGET_META="$OUTPUT_DIR/${BUNDLE_BASENAME}_metadata.json"
+
+if [ -z "$LATEST_BUNDLE" ]; then
+    printf 'WARN: bundle_app.py did not produce an encoded_app_*.txt file\n' >> "$HOOK_OUTPUT_DIR/bundle.txt"
+    exit 0
+fi
+
+mkdir -p "$OUTPUT_DIR"
+cp "$PROJECT_ROOT/$LATEST_BUNDLE" "$TARGET_BUNDLE" >> "$HOOK_OUTPUT_DIR/bundle.txt" 2>&1
+
+if [ -n "$LATEST_METADATA" ]; then
+    cp "$PROJECT_ROOT/$LATEST_METADATA" "$TARGET_META" >> "$HOOK_OUTPUT_DIR/bundle.txt" 2>&1
+else
+    {
+        printf '{\n'
+        printf '  "generated_by": "post-commit hook",\n'
+        printf '  "bundle_file": "%s"\n' "$(basename "$TARGET_BUNDLE")"
+        printf '}\n'
+    } > "$TARGET_META"
+fi
+
+(
+    cd "$PROJECT_ROOT" || exit 1
+    rm -f encoded_app_*.txt encoded_app_*.json
+) >> "$HOOK_OUTPUT_DIR/bundle.txt" 2>&1
+
+{
+    printf 'PASS: copied bundle to %s\n' "$TARGET_BUNDLE"
+    printf 'PASS: copied metadata to %s\n' "$TARGET_META"
+    printf 'Bundle size: %s\n' "$(du -h "$TARGET_BUNDLE" | cut -f1)"
+} >> "$HOOK_OUTPUT_DIR/bundle.txt"
+
+printf '%s\n' "$CURRENT_BRANCH" > "$HOOK_OUTPUT_DIR/current_branch.txt"
+printf '%s\n' "$COMMIT_MSG" > "$HOOK_OUTPUT_DIR/commit_msg.txt"
+printf '%s\n' "$CURRENT_COMMIT" > "$HOOK_OUTPUT_DIR/current_commit.txt"
+printf '%s\n' "$BUNDLE_BASENAME" > "$HOOK_OUTPUT_DIR/bundle_basename.txt"
+printf '%s\n' "$ENCODED_RELEASE_BRANCH" > "$HOOK_OUTPUT_DIR/encoded_release_branch.txt"
+
+BACKGROUND_SCRIPT="$PROJECT_ROOT/.git/hooks/push_bundle_background.sh"
+if [ -f "$BACKGROUND_SCRIPT" ] && [ -x "$BACKGROUND_SCRIPT" ]; then
+    printf '\nLaunching background push...\n' >> "$HOOK_OUTPUT_DIR/bundle.txt"
+    nohup bash "$BACKGROUND_SCRIPT" > "$HOOK_OUTPUT_DIR/background-startup.log" 2>&1 &
+    BG_PID=$!
+    printf 'PASS: background push started (PID: %s)\n' "$BG_PID" >> "$HOOK_OUTPUT_DIR/bundle.txt"
+else
+    printf 'WARN: background script missing or not executable: %s\n' "$BACKGROUND_SCRIPT" >> "$HOOK_OUTPUT_DIR/bundle.txt"
+fi
+
+{
+    printf 'Post-Commit Hook Summary\n'
+    printf '========================\n'
+    printf 'Output directory: %s\n' "$HOOK_OUTPUT_DIR"
+    printf 'Files created:\n'
+    ls -1 "$HOOK_OUTPUT_DIR"
+} > "$HOOK_OUTPUT_DIR/summary.txt"
+
+exit 0
