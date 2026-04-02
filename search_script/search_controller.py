@@ -25,7 +25,6 @@ class SearchController:
         self.cancel_event = threading.Event()
         self.search_thread: threading.Thread | None = None
         self.result_queue: queue.Queue[tuple[str, object]] = queue.Queue()
-        self._search_history: list = []
 
         # Setup callbacks
         self._setup_callbacks()
@@ -38,7 +37,6 @@ class SearchController:
         self.ui.on_search_cancel = self._cancel_search
         self.ui.on_result_double_click = self._open_file
         self.ui.on_open_containing_folder = self._open_containing_folder
-        self.ui.on_export = self._export_results
         self.ui.clear_dates_btn.clicked.connect(self._clear_dates)
 
     def _clear_dates(self) -> None:
@@ -49,13 +47,6 @@ class SearchController:
     def _start_search(self, search_params: dict[str, Any]):
         """Start the search operation."""
         self.logger.info(f"Starting search with parameters: {search_params}")
-
-        # Track search history
-        term = search_params["search_term"]
-        if term not in self._search_history:
-            self._search_history.insert(0, term)
-            self._search_history = self._search_history[:10]
-            self.ui.set_search_history(self._search_history)
 
         # Read date filter widgets
         min_date = self.ui.modified_after_entry.minimumDate()
@@ -254,11 +245,6 @@ class SearchController:
         """Open the containing folder for a file."""
         if not self.file_ops.open_containing_folder(file_path):
             self.ui.show_error_message("Error", f"Cannot open containing folder for: {file_path}")
-
-    def _export_results(self):
-        """Handle export request."""
-        self.ui.export_results()
-        self.logger.info("Results exported")
 
     def run(self):
         """Start the application."""

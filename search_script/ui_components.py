@@ -37,10 +37,6 @@ class SearchUI(QMainWindow):
         self.on_search_cancel: Callable | None = None
         self.on_result_double_click: Callable | None = None
         self.on_open_containing_folder: Callable | None = None
-        self.on_export: Callable | None = None
-
-        # Search history
-        self._search_history: list = []
 
         self._setup_ui()
 
@@ -217,7 +213,7 @@ class SearchUI(QMainWindow):
 
         self.export_button = QPushButton("Export")
         self.export_button.setFixedWidth(120)
-        self.export_button.clicked.connect(self._on_export_clicked)
+        self.export_button.clicked.connect(self.export_results)
         self.export_button.setEnabled(False)
         row.addWidget(self.export_button)
 
@@ -354,10 +350,6 @@ class SearchUI(QMainWindow):
                 self.min_size_entry.setText("10485760")
                 self.include_entry.setText("")
 
-    def _on_export_clicked(self):
-        if self.on_export:
-            self.on_export()
-
     # --- Public API ---
 
     def set_search_state(self, searching: bool):
@@ -439,9 +431,6 @@ class SearchUI(QMainWindow):
                     f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\n")
 
         QMessageBox.information(self, "Export", f"Exported {len(rows)} results to {file_path}")
-
-    def set_search_history(self, history: list):
-        self._search_history = history
 
     def get_search_term(self) -> str:
         return self.search_entry.text()
