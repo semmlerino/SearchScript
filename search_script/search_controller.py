@@ -214,20 +214,25 @@ class SearchController:
 
     def _drain_remaining_results(self) -> tuple[str, object] | None:
         """Drain remaining results from the queue. Returns first non-result sentinel found."""
+        batch: list[tuple[str, str, str, str]] = []
         try:
             while True:
                 msg_type, data = self.result_queue.get_nowait()
                 if msg_type == "result":
                     result: SearchResult = data  # type: ignore[assignment]
-                    self.ui.add_result(  # type: ignore[union-attr]
+                    batch.append((
                         result.file_path,
                         result.display_text,
                         result.formatted_size,
                         result.formatted_mod_time,
-                    )
+                    ))
                 else:
+                    if batch:
+                        self.ui.add_results_batch(batch)  # type: ignore[union-attr]
                     return (msg_type, data)
         except queue.Empty:
+            if batch:
+                self.ui.add_results_batch(batch)  # type: ignore[union-attr]
             return None
 
     def _cancel_search(self):
