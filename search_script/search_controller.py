@@ -6,7 +6,7 @@ from typing import Any
 from PySide6.QtCore import QTimer
 
 from .file_utils import FileOperations, LoggingConfig
-from .search_engine import SearchEngine, SearchMode, SearchResult
+from .search_engine import SearchBackend, SearchEngine, SearchMode, SearchResult
 from .ui_components import SearchUI
 
 
@@ -103,6 +103,8 @@ class SearchController:
 
             mode_str = search_params.get("search_mode", "substring")
             search_mode = SearchMode(mode_str)
+            backend_str = search_params.get("search_backend", "auto")
+            search_backend = SearchBackend(backend_str)
 
             for result in self.search_engine.search_files(
                 directory=search_params["directory"],
@@ -111,9 +113,12 @@ class SearchController:
                 exclude_types=search_params["exclude_types"],
                 search_within_files=search_params["search_within_files"],
                 search_mode=search_mode,
+                search_backend=search_backend,
                 max_depth=search_params.get("max_depth"),
                 min_size=search_params.get("min_size"),
                 max_size=search_params.get("max_size"),
+                modified_after=search_params.get("modified_after"),
+                modified_before=search_params.get("modified_before"),
                 match_folders=search_params.get("match_folders", False),
                 follow_symlinks=search_params.get("follow_symlinks", False),
                 progress_callback=progress_callback,

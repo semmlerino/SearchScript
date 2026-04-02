@@ -91,6 +91,13 @@ class SearchUI(QMainWindow):
         self.mode_combo.setFixedWidth(100)
         row.addWidget(self.mode_combo)
 
+        row.addWidget(QLabel("Backend:"))
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItems(["auto", "python", "ripgrep"])
+        self.backend_combo.setCurrentText("auto")
+        self.backend_combo.setFixedWidth(100)
+        row.addWidget(self.backend_combo)
+
         row.addWidget(QLabel("Preset:"))
         self.preset_combo = QComboBox()
         self.preset_combo.addItems(
@@ -273,6 +280,7 @@ class SearchUI(QMainWindow):
                 ],
                 "search_within_files": self.within_checkbox.isChecked(),
                 "search_mode": self.mode_combo.currentText(),
+                "search_backend": self.backend_combo.currentText(),
                 "max_depth": (
                     int(self.depth_entry.text()) if self.depth_entry.text().strip() else None
                 ),
