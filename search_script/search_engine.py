@@ -510,12 +510,14 @@ class SearchEngine:
             )
         except OSError as e:
             self.logger.warning(f"ripgrep backend unavailable, falling back to Python search: {e}")
-            yield from self._search_file_content_with_python_walk(
+            yield from self.search_files(
                 directory=directory,
                 search_term=search_term,
                 include_types=include_types,
                 exclude_types=exclude_types,
+                search_within_files=True,
                 search_mode=search_mode,
+                search_backend=SearchBackend.PYTHON,
                 max_depth=max_depth,
                 min_size=min_size,
                 max_size=max_size,
@@ -605,41 +607,6 @@ class SearchEngine:
                 raise SearchError(stderr or f"ripgrep search failed with exit code {return_code}")
         finally:
             self._terminate_process(process)
-
-    def _search_file_content_with_python_walk(
-        self,
-        directory: str,
-        search_term: str,
-        include_types: list[str],
-        exclude_types: list[str],
-        search_mode: SearchMode,
-        max_depth: int | None,
-        min_size: int | None,
-        max_size: int | None,
-        modified_after: datetime | None,
-        modified_before: datetime | None,
-        follow_symlinks: bool,
-        progress_callback=None,
-        cancel_event: threading.Event | None = None,
-    ) -> Generator[SearchResult, None, None]:
-        """Fallback helper that preserves existing Python traversal semantics."""
-        yield from self.search_files(
-            directory=directory,
-            search_term=search_term,
-            include_types=include_types,
-            exclude_types=exclude_types,
-            search_within_files=True,
-            search_mode=search_mode,
-            search_backend=SearchBackend.PYTHON,
-            max_depth=max_depth,
-            min_size=min_size,
-            max_size=max_size,
-            modified_after=modified_after,
-            modified_before=modified_before,
-            follow_symlinks=follow_symlinks,
-            progress_callback=progress_callback,
-            cancel_event=cancel_event,
-        )
 
     def _build_ripgrep_command(
         self,
