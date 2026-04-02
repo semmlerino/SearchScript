@@ -274,7 +274,6 @@ version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "pyside6" },
-    { name = "rapidfuzz" },
 ]
 
 [package.optional-dependencies]
@@ -283,16 +282,19 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
 ]
+fuzzy = [
+    { name = "rapidfuzz" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "basedpyright", marker = "extra == 'dev'" },
     { name = "pyside6", specifier = ">=6.6" },
     { name = "pytest", marker = "extra == 'dev'" },
-    { name = "rapidfuzz", specifier = ">=3.0" },
+    { name = "rapidfuzz", marker = "extra == 'fuzzy'", specifier = ">=3.0" },
     { name = "ruff", marker = "extra == 'dev'" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "fuzzy"]
 
 [[package]]
 name = "shiboken6"

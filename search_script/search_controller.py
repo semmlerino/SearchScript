@@ -118,7 +118,7 @@ class SearchController:
                 if msg_type == "result":
                     result: SearchResult = data  # type: ignore[assignment]
                     self.ui.add_result(  # type: ignore[union-attr]
-                        result.file_path, result.display_text, result.formatted_mod_time
+                        result.file_path, result.display_text, result.formatted_size, result.formatted_mod_time
                     )
                     items_this_tick += 1
                 elif msg_type == "done":

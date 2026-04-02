@@ -40,7 +40,7 @@ class SearchConfig:
         if self.default_include_types is None:
             self.default_include_types = []
         if self.default_exclude_types is None:
-            self.default_exclude_types = ['.log', '.tmp', '.cache']
+            self.default_exclude_types = [".log", ".tmp", ".cache"]
         if self.search_history is None:
             self.search_history = []
 
@@ -74,7 +74,7 @@ class ConfigManager:
             config = self.config
 
         try:
-            with open(self.config_file, 'w') as f:
+            with open(self.config_file, "w") as f:
                 json.dump(asdict(config), f, indent=2)
         except Exception as e:
             print(f"Error saving config: {e}")
@@ -86,8 +86,8 @@ class ConfigManager:
         logging.basicConfig(
             filename=self.config.log_file,
             level=level,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            filemode='a'
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            filemode="a",
         )
 
         return logging.getLogger(__name__)
@@ -108,19 +108,23 @@ class ConfigManager:
 # Error handling classes
 class SearchError(Exception):
     """Base exception for search operations."""
+
     pass
 
 
 class DirectoryError(SearchError):
     """Exception for directory-related errors."""
+
     pass
 
 
 class FileAccessError(SearchError):
     """Exception for file access errors."""
+
     pass
 
 
 class ValidationError(SearchError):
     """Exception for input validation errors."""
+
     pass

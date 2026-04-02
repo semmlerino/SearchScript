@@ -28,6 +28,7 @@ class SearchResult:
     line_content: str | None = None
     next_line: str | None = None
     mod_time: float | None = None
+    file_size: int | None = None
 
     @property
     def display_text(self) -> str:
@@ -39,6 +40,17 @@ class SearchResult:
     def formatted_mod_time(self) -> str:
         if self.mod_time is not None:
             return datetime.fromtimestamp(self.mod_time).strftime("%Y-%m-%d %H:%M:%S")
+        return "N/A"
+
+    @property
+    def formatted_size(self) -> str:
+        if self.file_size is not None:
+            size = float(self.file_size)
+            for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+                if size < 1024.0:
+                    return f"{size:.1f} {unit}" if unit != 'B' else f"{int(size)} {unit}"
+                size /= 1024.0
+            return f"{size:.1f} PB"
         return "N/A"
 
 
@@ -236,7 +248,7 @@ class SearchEngine:
                             yield result
                     else:
                         if self._matches_term(file_name, search_term, search_mode):
-                            yield SearchResult(str(file_path), mod_time=entry_stat.st_mtime)
+                            yield SearchResult(str(file_path), mod_time=entry_stat.st_mtime, file_size=entry_stat.st_size)
                 except FileAccessError as e:
                     self.logger.warning(f"Skipping file due to access error: {e}")
                     continue
@@ -348,12 +360,12 @@ class SearchEngine:
         if file_size == 0:
             return
         if file_size > 1024 * 1024:
-            yield from self._search_large_file(file_path, search_term, search_mode)
+            yield from self._search_large_file(file_path, search_term, search_mode, file_size=file_size)
         else:
-            yield from self._search_small_file(file_path, search_term, search_mode)
+            yield from self._search_small_file(file_path, search_term, search_mode, file_size=file_size)
 
     def _search_small_file(
-        self, file_path: Path, search_term: str, search_mode: SearchMode = SearchMode.SUBSTRING
+        self, file_path: Path, search_term: str, search_mode: SearchMode = SearchMode.SUBSTRING, file_size: int | None = None
     ) -> Generator[SearchResult, None, None]:
         """Search small files using standard file reading."""
         try:
@@ -368,7 +380,7 @@ class SearchEngine:
                     next_line = lines[i + 1].strip() if i + 1 < len(lines) else None
                     if next_line and len(next_line) > 2000:
                         next_line = next_line[:2000] + "..."
-                    yield SearchResult(str(file_path), i + 1, line_content, next_line)
+                    yield SearchResult(str(file_path), i + 1, line_content, next_line, file_size=file_size)
         except PermissionError as e:
             raise FileAccessError(f"Permission denied reading file: {file_path}") from e
         except UnicodeDecodeError:
@@ -377,7 +389,7 @@ class SearchEngine:
             raise FileAccessError(f"Error reading file {file_path}: {e}") from e
 
     def _search_large_file(
-        self, file_path: Path, search_term: str, search_mode: SearchMode = SearchMode.SUBSTRING
+        self, file_path: Path, search_term: str, search_mode: SearchMode = SearchMode.SUBSTRING, file_size: int | None = None
     ) -> Generator[SearchResult, None, None]:
         """Search large files using memory mapping for better performance."""
         try:
@@ -409,13 +421,13 @@ class SearchEngine:
                             if len(line_content) > 2000:
                                 line_content = line_content[:2000] + "..."
 
-                            yield SearchResult(str(file_path), line_num, line_content)
+                            yield SearchResult(str(file_path), line_num, line_content, file_size=file_size)
 
                             start = pos + 1
 
                 except (OSError, ValueError):
                     # Fallback to regular file reading if mmap fails
-                    yield from self._search_small_file(file_path, search_term, search_mode)
+                    yield from self._search_small_file(file_path, search_term, search_mode, file_size=file_size)
 
         except PermissionError as e:
             raise FileAccessError(f"Permission denied reading file: {file_path}") from e

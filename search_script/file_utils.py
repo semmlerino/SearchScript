@@ -27,12 +27,12 @@ class FileOperations:
             return False
 
         try:
-            if sys.platform.startswith('darwin'):
-                subprocess.call(('open', file_path))
-            elif os.name == 'nt':
+            if sys.platform.startswith("darwin"):
+                subprocess.call(("open", file_path))
+            elif os.name == "nt":
                 os.startfile(file_path)
-            elif os.name == 'posix':
-                subprocess.call(('xdg-open', file_path))
+            elif os.name == "posix":
+                subprocess.call(("xdg-open", file_path))
 
             self.logger.info(f"Opened file: {file_path}")
             return True
@@ -49,18 +49,18 @@ class FileOperations:
         try:
             folder_path = os.path.dirname(file_path)
 
-            if sys.platform.startswith('darwin'):
-                subprocess.call(['open', folder_path])
+            if sys.platform.startswith("darwin"):
+                subprocess.call(["open", folder_path])
                 self.logger.info(f"Opened folder on macOS: {folder_path}")
-            elif os.name == 'nt':
+            elif os.name == "nt":
                 file_path_norm = os.path.normpath(file_path)
                 command = f'explorer /select,"{file_path_norm}"'
                 subprocess.Popen(command, shell=True)
                 self.logger.info(
                     f"Executed Windows Explorer command to select file: {file_path_norm}"
                 )
-            elif os.name == 'posix':
-                subprocess.call(['xdg-open', folder_path])
+            elif os.name == "posix":
+                subprocess.call(["xdg-open", folder_path])
                 self.logger.info(f"Opened folder on POSIX system: {folder_path}")
 
             return True
@@ -74,14 +74,14 @@ class LoggingConfig:
 
     @staticmethod
     def setup_logging(
-        log_file: str = 'file_search.log', level: int = logging.DEBUG
+        log_file: str = "file_search.log", level: int = logging.DEBUG
     ) -> logging.Logger:
         """Setup logging configuration."""
         logging.basicConfig(
             filename=log_file,
             level=level,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            filemode='a'
+            format="%(asctime)s - %(levelname)s - %(message)s",
+            filemode="a",
         )
 
         logger = logging.getLogger(__name__)
@@ -108,8 +108,8 @@ class ValidationUtils:
         valid_extensions = []
         for ext in extensions:
             ext = ext.strip().lower()
-            if ext and not ext.startswith('.'):
-                ext = '.' + ext
+            if ext and not ext.startswith("."):
+                ext = "." + ext
             if ext:
                 valid_extensions.append(ext)
         return valid_extensions

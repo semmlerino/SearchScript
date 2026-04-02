@@ -191,20 +191,22 @@ class SearchUI(QMainWindow):
 
     def _create_results_tree(self):
         """Create results QTreeWidget."""
-        columns = ["File Path", "Matching Line", "Last Modified"]
+        columns = ["File Path", "Matching Line", "Size", "Last Modified"]
         self.results_tree = QTreeWidget()
         self.results_tree.setColumnCount(len(columns))
         self.results_tree.setHeaderLabels(columns)
         self.results_tree.setSortingEnabled(True)
 
-        self.results_tree.setColumnWidth(0, 600)
+        self.results_tree.setColumnWidth(0, 500)
         self.results_tree.setColumnWidth(1, 400)
-        self.results_tree.setColumnWidth(2, 200)
+        self.results_tree.setColumnWidth(2, 100)
+        self.results_tree.setColumnWidth(3, 150)
 
         header = self.results_tree.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
 
         # Double-click
         self.results_tree.itemDoubleClicked.connect(self._on_result_double_click)
@@ -343,9 +345,9 @@ class SearchUI(QMainWindow):
         """Clear the results tree."""
         self.results_tree.clear()
 
-    def add_result(self, file_path: str, display_text: str = "", mod_time: str = ""):
+    def add_result(self, file_path: str, display_text: str, file_size: str, mod_time: str):
         """Add a result row to the tree."""
-        item = QTreeWidgetItem([file_path, display_text, mod_time])
+        item = QTreeWidgetItem([file_path, display_text, file_size, mod_time])
         self.results_tree.addTopLevelItem(item)
 
     def update_status(self, message: str):
@@ -372,21 +374,21 @@ class SearchUI(QMainWindow):
         for i in range(self.results_tree.topLevelItemCount()):
             item = self.results_tree.topLevelItem(i)
             if item is not None:
-                rows.append((item.text(0), item.text(1), item.text(2)))
+                rows.append((item.text(0), item.text(1), item.text(2), item.text(3)))
 
         if file_path.endswith(".json"):
-            data = [{"file_path": r[0], "matching_line": r[1], "last_modified": r[2]} for r in rows]
+            data = [{"file_path": r[0], "matching_line": r[1], "size": r[2], "last_modified": r[3]} for r in rows]
             with open(file_path, "w") as f:
                 json.dump(data, f, indent=2)
         elif file_path.endswith(".csv"):
             with open(file_path, "w", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["File Path", "Matching Line", "Last Modified"])
+                writer.writerow(["File Path", "Matching Line", "Size", "Last Modified"])
                 writer.writerows(rows)
         else:
             with open(file_path, "w") as f:
                 for r in rows:
-                    f.write(f"{r[0]}\t{r[1]}\t{r[2]}\n")
+                    f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\n")
 
         QMessageBox.information(self, "Export", f"Exported {len(rows)} results to {file_path}")
 
