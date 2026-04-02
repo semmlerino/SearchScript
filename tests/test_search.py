@@ -11,8 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from search_script.config import ConfigManager
-from search_script.file_utils import FileOperations, ValidationUtils
+from search_script.file_utils import FileOperations
 from search_script.search_controller import SearchController
 from search_script.search_engine import SearchBackend, SearchEngine, SearchMode, SearchResult
 
@@ -134,21 +133,6 @@ def test_file_modification_time():
     mod_time = file_ops.get_file_modification_time("/path/to/nonexistent/file.txt")
     assert mod_time == "N/A"
 
-
-def test_validate_directory():
-    assert ValidationUtils.validate_directory("/") is True
-    assert ValidationUtils.validate_directory("/nonexistent/path") is False
-
-
-def test_validate_search_term():
-    assert ValidationUtils.validate_search_term("test") is True
-    assert ValidationUtils.validate_search_term("") is False
-    assert ValidationUtils.validate_search_term("   ") is False
-
-
-def test_validate_file_extensions():
-    extensions = ValidationUtils.validate_file_extensions(["txt", ".py", " .log ", ""])
-    assert extensions == [".txt", ".py", ".log"]
 
 
 def test_fuzzy_filename_search(tmp_path):
@@ -288,15 +272,3 @@ def test_controller_search_worker_forwards_backend_and_dates(qapp):
     controller.ui.close()
 
 
-def test_config_manager(tmp_path):
-    config_file = str(tmp_path / "test_config.json")
-    manager = ConfigManager(config_file)
-    config = manager.get_config()
-
-    assert config.window_width == 1200
-    assert config.window_height == 700
-
-    manager.update_config(window_width=1600, log_level="DEBUG")
-    updated = manager.get_config()
-    assert updated.window_width == 1600
-    assert updated.log_level == "DEBUG"

@@ -88,28 +88,3 @@ class LoggingConfig:
         logger.info("Logging initialized")
         return logger
 
-
-class ValidationUtils:
-    """Utility functions for input validation."""
-
-    @staticmethod
-    def validate_directory(directory: str) -> bool:
-        """Validate if directory exists and is accessible."""
-        return os.path.exists(directory) and os.path.isdir(directory)
-
-    @staticmethod
-    def validate_search_term(search_term: str) -> bool:
-        """Validate search term is not empty."""
-        return bool(search_term and search_term.strip())
-
-    @staticmethod
-    def validate_file_extensions(extensions: list) -> list:
-        """Validate and normalize file extensions."""
-        valid_extensions = []
-        for ext in extensions:
-            ext = ext.strip().lower()
-            if ext and not ext.startswith("."):
-                ext = "." + ext
-            if ext:
-                valid_extensions.append(ext)
-        return valid_extensions
