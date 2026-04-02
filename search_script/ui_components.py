@@ -373,11 +373,6 @@ class SearchUI(QMainWindow):
         """Clear the results tree."""
         self.results_tree.clear()
 
-    def add_result(self, file_path: str, display_text: str, file_size: str, mod_time: str):
-        """Add a result row to the tree."""
-        item = QTreeWidgetItem([file_path, display_text, file_size, mod_time])
-        self.results_tree.addTopLevelItem(item)
-
     def add_results_batch(self, items: list[tuple[str, str, str, str]]) -> None:
         """Add multiple results efficiently using addTopLevelItems."""
         tree_items: list[QTreeWidgetItem] = []

@@ -1,4 +1,4 @@
-"""Configuration and settings management for the search application."""
+"""Exception hierarchy for the search application."""
 
 
 # Error handling classes
