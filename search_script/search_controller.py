@@ -1,5 +1,6 @@
 import queue
 import threading
+from datetime import datetime
 from typing import Any
 
 from PySide6.QtCore import QTimer
@@ -38,6 +39,12 @@ class SearchController:
         self.ui.on_result_double_click = self._open_file
         self.ui.on_open_containing_folder = self._open_containing_folder
         self.ui.on_export = self._export_results
+        self.ui.clear_dates_btn.clicked.connect(self._clear_dates)
+
+    def _clear_dates(self) -> None:
+        """Reset date filter widgets to their minimum (no-filter) state."""
+        self.ui.modified_after_entry.setDate(self.ui.modified_after_entry.minimumDate())
+        self.ui.modified_before_entry.setDate(self.ui.modified_before_entry.minimumDate())
 
     def _start_search(self, search_params: dict[str, Any]):
         """Start the search operation."""
@@ -49,6 +56,24 @@ class SearchController:
             self._search_history.insert(0, term)
             self._search_history = self._search_history[:10]
             self.ui.set_search_history(self._search_history)
+
+        # Read date filter widgets
+        min_date = self.ui.modified_after_entry.minimumDate()
+        after_qdate = self.ui.modified_after_entry.date()
+        modified_after = (
+            datetime(after_qdate.year(), after_qdate.month(), after_qdate.day())
+            if after_qdate != min_date
+            else None
+        )
+
+        before_qdate = self.ui.modified_before_entry.date()
+        modified_before = (
+            datetime(before_qdate.year(), before_qdate.month(), before_qdate.day())
+            if before_qdate != min_date
+            else None
+        )
+        search_params["modified_after"] = modified_after
+        search_params["modified_before"] = modified_before
 
         # Reset UI state
         self.ui.set_search_state(True)
@@ -110,32 +135,45 @@ class SearchController:
 
     def _process_results(self):
         """Process results from the search thread."""
+        batch: list[tuple[str, str, str, str]] = []
         try:
-            items_this_tick = 0
-            while items_this_tick < 200:
+            for _ in range(500):
                 msg_type, data = self.result_queue.get_nowait()
 
                 if msg_type == "result":
                     result: SearchResult = data  # type: ignore[assignment]
-                    self.ui.add_result(  # type: ignore[union-attr]
-                        result.file_path, result.display_text, result.formatted_size, result.formatted_mod_time
+                    batch.append(
+                        (
+                            result.file_path,
+                            result.display_text,
+                            result.formatted_size,
+                            result.formatted_mod_time,
+                        )
                     )
-                    items_this_tick += 1
                 elif msg_type == "done":
+                    if batch:
+                        self.ui.add_results_batch(batch)  # type: ignore[union-attr]
                     self._drain_remaining_results()
                     self._handle_search_complete()
                     return
                 elif msg_type == "status":
                     self.ui.update_status(str(data))
                 elif msg_type == "error":
+                    if batch:
+                        self.ui.add_results_batch(batch)  # type: ignore[union-attr]
                     self._handle_search_error(str(data))
                     return
                 elif msg_type == "cancelled":
+                    if batch:
+                        self.ui.add_results_batch(batch)  # type: ignore[union-attr]
                     self._drain_remaining_results()
                     self._handle_search_cancelled(str(data))
                     return
         except queue.Empty:
             pass
+
+        if batch:
+            self.ui.add_results_batch(batch)  # type: ignore[union-attr]
 
         if self.search_thread and self.search_thread.is_alive():
             QTimer.singleShot(100, self._process_results)
@@ -186,7 +224,10 @@ class SearchController:
                 if msg_type == "result":
                     result: SearchResult = data  # type: ignore[assignment]
                     self.ui.add_result(  # type: ignore[union-attr]
-                        result.file_path, result.display_text, result.formatted_mod_time
+                        result.file_path,
+                        result.display_text,
+                        result.formatted_size,
+                        result.formatted_mod_time,
                     )
                 else:
                     return (msg_type, data)

@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict, cast
 
@@ -228,13 +228,9 @@ class ApplicationBundler:
                 else:
                     # General wildcard pattern - anchor to start if pattern doesn't start with *
                     if pattern.startswith("*"):
-                        regex_pattern = (
-                            pattern.replace(".", r"\.").replace("*", ".*") + "$"
-                        )
+                        regex_pattern = pattern.replace(".", r"\.").replace("*", ".*") + "$"
                     else:
-                        regex_pattern = (
-                            "^" + pattern.replace(".", r"\.").replace("*", ".*") + "$"
-                        )
+                        regex_pattern = "^" + pattern.replace(".", r"\.").replace("*", ".*") + "$"
                     if re.search(regex_pattern, file_path) or re.search(
                         regex_pattern,
                         file_name,
@@ -255,13 +251,9 @@ class ApplicationBundler:
                 else:
                     # General wildcard pattern - anchor to start if pattern doesn't start with *
                     if pattern.startswith("*"):
-                        regex_pattern = (
-                            pattern.replace(".", r"\.").replace("*", ".*") + "$"
-                        )
+                        regex_pattern = pattern.replace(".", r"\.").replace("*", ".*") + "$"
                     else:
-                        regex_pattern = (
-                            "^" + pattern.replace(".", r"\.").replace("*", ".*") + "$"
-                        )
+                        regex_pattern = "^" + pattern.replace(".", r"\.").replace("*", ".*") + "$"
                     if re.search(regex_pattern, file_path) or re.search(
                         regex_pattern,
                         file_name,
@@ -284,14 +276,14 @@ class ApplicationBundler:
         """
         files_to_bundle: list[tuple[str, str]] = []
         source_dir = str(Path(source_dir).resolve())
-        max_size_bytes = self.config["max_file_size_mb"] * 1024 * 1024
+        max_size_bytes = self.config.get("max_file_size_mb", 10) * 1024 * 1024
 
         for root, dirs, files in os.walk(source_dir):
             # Filter out excluded directories
             dirs[:] = [
                 d
                 for d in dirs
-                if d not in self.config["exclude_dirs"]
+                if d not in self.config.get("exclude_dirs", [])
                 and not self.gitignore_parser.should_exclude(d, is_dir=True)
             ]
 
@@ -364,7 +356,7 @@ class ApplicationBundler:
 
         # Create bundle metadata
         metadata = {
-            "created": datetime.now(tz=UTC).isoformat(),
+            "created": datetime.now(tz=timezone.utc).isoformat(),
             "files_count": len(files_to_bundle),
             "files": [rel_path for _, rel_path in files_to_bundle],
             "source_dir": str(Path.cwd()),
@@ -388,7 +380,7 @@ class ApplicationBundler:
 
         """
         if not output_file:
-            timestamp = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
             output_file = f"encoded_app_{timestamp}.txt"
 
         # Build transfer_cli command
@@ -405,7 +397,7 @@ class ApplicationBundler:
             "-o",
             output_file,
             "-c",
-            str(self.config["chunk_size_kb"]),
+            str(self.config.get("chunk_size_kb", 500)),
             "--single-file",
             "--metadata",
         ]

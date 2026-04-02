@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDateEdit,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
@@ -151,6 +152,33 @@ class SearchUI(QMainWindow):
         row.addStretch()
 
         self._main_layout.addLayout(row)
+
+        # Date filter row
+        date_row = QHBoxLayout()
+
+        date_row.addWidget(QLabel("Modified after:"))
+        self.modified_after_entry: QDateEdit = QDateEdit()
+        self.modified_after_entry.setCalendarPopup(True)
+        self.modified_after_entry.setSpecialValueText(" ")
+        self.modified_after_entry.setDate(self.modified_after_entry.minimumDate())
+        self.modified_after_entry.setDisplayFormat("yyyy-MM-dd")
+        date_row.addWidget(self.modified_after_entry)
+        date_row.addSpacing(15)
+
+        date_row.addWidget(QLabel("Modified before:"))
+        self.modified_before_entry: QDateEdit = QDateEdit()
+        self.modified_before_entry.setCalendarPopup(True)
+        self.modified_before_entry.setSpecialValueText(" ")
+        self.modified_before_entry.setDate(self.modified_before_entry.minimumDate())
+        self.modified_before_entry.setDisplayFormat("yyyy-MM-dd")
+        date_row.addWidget(self.modified_before_entry)
+        date_row.addSpacing(15)
+
+        self.clear_dates_btn: QPushButton = QPushButton("Clear dates")
+        date_row.addWidget(self.clear_dates_btn)
+        date_row.addStretch()
+
+        self._main_layout.addLayout(date_row)
 
     def _create_progress_row(self):
         """Create progress bar and status label."""
@@ -350,6 +378,15 @@ class SearchUI(QMainWindow):
         item = QTreeWidgetItem([file_path, display_text, file_size, mod_time])
         self.results_tree.addTopLevelItem(item)
 
+    def add_results_batch(self, items: list[tuple[str, str, str, str]]) -> None:
+        """Add multiple results efficiently using addTopLevelItems."""
+        tree_items: list[QTreeWidgetItem] = []
+        for file_path, display_text, file_size, mod_time in items:
+            item = QTreeWidgetItem([file_path, display_text, file_size, mod_time])
+            item.setData(0, Qt.ItemDataRole.UserRole, file_path)
+            tree_items.append(item)
+        self.results_tree.addTopLevelItems(tree_items)
+
     def update_status(self, message: str):
         """Update status label text."""
         self.status_label.setText(message)
@@ -377,7 +414,10 @@ class SearchUI(QMainWindow):
                 rows.append((item.text(0), item.text(1), item.text(2), item.text(3)))
 
         if file_path.endswith(".json"):
-            data = [{"file_path": r[0], "matching_line": r[1], "size": r[2], "last_modified": r[3]} for r in rows]
+            data = [
+                {"file_path": r[0], "matching_line": r[1], "size": r[2], "last_modified": r[3]}
+                for r in rows
+            ]
             with open(file_path, "w") as f:
                 json.dump(data, f, indent=2)
         elif file_path.endswith(".csv"):

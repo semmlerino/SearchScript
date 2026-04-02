@@ -46,9 +46,9 @@ class SearchResult:
     def formatted_size(self) -> str:
         if self.file_size is not None:
             size = float(self.file_size)
-            for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            for unit in ["B", "KB", "MB", "GB", "TB"]:
                 if size < 1024.0:
-                    return f"{size:.1f} {unit}" if unit != 'B' else f"{int(size)} {unit}"
+                    return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} {unit}"
                 size /= 1024.0
             return f"{size:.1f} PB"
         return "N/A"
@@ -88,7 +88,6 @@ class SearchEngine:
             ".gif",
             ".bmp",
             ".tiff",
-            ".svg",
             ".ico",
             ".mp3",
             ".mp4",
@@ -118,7 +117,6 @@ class SearchEngine:
             ".usdc",
             ".bgeo",
             ".vdb",
-            ".ma",
             ".mb",
             # Houdini formats
             ".hip",
@@ -128,10 +126,6 @@ class SearchEngine:
             # Audio formats
             ".wav",
             ".aiff",
-            # Color/LUT formats
-            ".spi1d",
-            ".spi3d",
-            ".cube",
             # Nuke compiled format
             ".nknc",
         }
@@ -215,6 +209,7 @@ class SearchEngine:
                     include_types,
                     exclude_types,
                     search_within_files=search_within_files,
+                    file_path=Path(entry.path),
                 ):
                     files_processed += 1
                     self._update_progress(files_processed, dir_path, progress_callback)
@@ -248,7 +243,11 @@ class SearchEngine:
                             yield result
                     else:
                         if self._matches_term(file_name, search_term, search_mode):
-                            yield SearchResult(str(file_path), mod_time=entry_stat.st_mtime, file_size=entry_stat.st_size)
+                            yield SearchResult(
+                                str(file_path),
+                                mod_time=entry_stat.st_mtime,
+                                file_size=entry_stat.st_size,
+                            )
                 except FileAccessError as e:
                     self.logger.warning(f"Skipping file due to access error: {e}")
                     continue
@@ -278,17 +277,31 @@ class SearchEngine:
         if not search_term or not search_term.strip():
             raise ValidationError("Search term cannot be empty")
 
+    def _is_likely_binary(self, file_path: Path) -> bool:
+        """Return True if the file appears to be binary (contains null bytes in the first 8 KB)."""
+        try:
+            with open(file_path, "rb") as f:
+                return b"\x00" in f.read(8192)
+        except OSError:
+            return True
+
     def _should_process_file(
         self,
         file_lower: str,
         include_types: list[str],
         exclude_types: list[str],
         search_within_files: bool = True,
+        file_path: Path | None = None,
     ) -> bool:
         """Check if file should be processed based on type filters."""
-        # Skip known binary file types for content search only
+        # Skip known binary file types for content search only; allow through if
+        # the file doesn't actually contain null bytes (e.g. text-based USD/USDA).
         file_ext = Path(file_lower).suffix.lower()
-        if search_within_files and file_ext in self._binary_extensions:
+        if (
+            search_within_files
+            and file_ext in self._binary_extensions
+            and (file_path is None or self._is_likely_binary(file_path))
+        ):
             return False
 
         if include_types and not any(file_lower.endswith(ext) for ext in include_types):
@@ -360,12 +373,20 @@ class SearchEngine:
         if file_size == 0:
             return
         if file_size > 1024 * 1024:
-            yield from self._search_large_file(file_path, search_term, search_mode, file_size=file_size)
+            yield from self._search_large_file(
+                file_path, search_term, search_mode, file_size=file_size
+            )
         else:
-            yield from self._search_small_file(file_path, search_term, search_mode, file_size=file_size)
+            yield from self._search_small_file(
+                file_path, search_term, search_mode, file_size=file_size
+            )
 
     def _search_small_file(
-        self, file_path: Path, search_term: str, search_mode: SearchMode = SearchMode.SUBSTRING, file_size: int | None = None
+        self,
+        file_path: Path,
+        search_term: str,
+        search_mode: SearchMode = SearchMode.SUBSTRING,
+        file_size: int | None = None,
     ) -> Generator[SearchResult, None, None]:
         """Search small files using standard file reading."""
         try:
@@ -380,7 +401,9 @@ class SearchEngine:
                     next_line = lines[i + 1].strip() if i + 1 < len(lines) else None
                     if next_line and len(next_line) > 2000:
                         next_line = next_line[:2000] + "..."
-                    yield SearchResult(str(file_path), i + 1, line_content, next_line, file_size=file_size)
+                    yield SearchResult(
+                        str(file_path), i + 1, line_content, next_line, file_size=file_size
+                    )
         except PermissionError as e:
             raise FileAccessError(f"Permission denied reading file: {file_path}") from e
         except UnicodeDecodeError:
@@ -389,45 +412,59 @@ class SearchEngine:
             raise FileAccessError(f"Error reading file {file_path}: {e}") from e
 
     def _search_large_file(
-        self, file_path: Path, search_term: str, search_mode: SearchMode = SearchMode.SUBSTRING, file_size: int | None = None
+        self,
+        file_path: Path,
+        search_term: str,
+        search_mode: SearchMode = SearchMode.SUBSTRING,
+        file_size: int | None = None,
     ) -> Generator[SearchResult, None, None]:
         """Search large files using memory mapping for better performance."""
         try:
             with open(file_path, "rb") as f:
                 try:
                     with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                        search_bytes = search_term.lower().encode("utf-8", errors="ignore")
-
-                        # Find all occurrences
-                        start = 0
-                        while True:
-                            pos = mm.find(search_bytes, start)
-                            if pos == -1:
-                                break
-
-                            # Find line boundaries
-                            line_start = mm.rfind(b"\n", 0, pos) + 1
-                            line_end = mm.find(b"\n", pos)
-                            if line_end == -1:
-                                line_end = len(mm)
-
-                            # Get line content and number
-                            line_content = (
-                                mm[line_start:line_end].decode("utf-8", errors="ignore").strip()
-                            )
-                            line_num = mm[:line_start].count(b"\n") + 1
-
-                            # Truncate long lines
-                            if len(line_content) > 2000:
-                                line_content = line_content[:2000] + "..."
-
-                            yield SearchResult(str(file_path), line_num, line_content, file_size=file_size)
-
-                            start = pos + 1
+                        encoding = self._detect_encoding(file_path)
+                        line_no = 0
+                        pos = 0
+                        while pos < len(mm):
+                            eol = mm.find(b"\n", pos)
+                            end = eol if eol != -1 else len(mm)
+                            line_bytes = mm[pos:end]
+                            line_text = line_bytes.decode(encoding, errors="replace").rstrip("\r")
+                            line_no += 1
+                            if self._matches_term(line_text, search_term, search_mode):
+                                line_content = line_text.strip()
+                                if len(line_content) > 2000:
+                                    line_content = line_content[:2000] + "..."
+                                # Peek at next line for context_after
+                                next_line: str | None = None
+                                if eol != -1:
+                                    next_eol = mm.find(b"\n", end + 1)
+                                    next_end = next_eol if next_eol != -1 else len(mm)
+                                    raw_next = (
+                                        mm[end + 1 : next_end]
+                                        .decode(encoding, errors="replace")
+                                        .rstrip("\r")
+                                        .strip()
+                                    )
+                                    if raw_next:
+                                        if len(raw_next) > 2000:
+                                            raw_next = raw_next[:2000] + "..."
+                                        next_line = raw_next
+                                yield SearchResult(
+                                    str(file_path),
+                                    line_no,
+                                    line_content,
+                                    next_line,
+                                    file_size=file_size,
+                                )
+                            pos = end + 1
 
                 except (OSError, ValueError):
                     # Fallback to regular file reading if mmap fails
-                    yield from self._search_small_file(file_path, search_term, search_mode, file_size=file_size)
+                    yield from self._search_small_file(
+                        file_path, search_term, search_mode, file_size=file_size
+                    )
 
         except PermissionError as e:
             raise FileAccessError(f"Permission denied reading file: {file_path}") from e
@@ -455,7 +492,7 @@ class SearchEngine:
         Yields (dir_path, None) once per directory entered (for folder matching),
         then (dir_path, entry) for each file in that directory.
         """
-        if max_depth is not None and _current_depth >= max_depth:
+        if max_depth is not None and _current_depth > max_depth:
             return
         if cancel_event and cancel_event.is_set():
             return

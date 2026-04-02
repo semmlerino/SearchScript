@@ -8,12 +8,13 @@ suitable for use in automated workflows and git hooks.
 # Standard library imports
 import argparse
 import base64
+import contextlib
 import io
 import json
 import os
 import sys
 import tarfile
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
@@ -51,11 +52,8 @@ class FolderEncoder:
         try:
             for entry in folder_path.rglob("*"):
                 if entry.is_file():
-                    try:
+                    with contextlib.suppress(OSError):
                         total_size += entry.stat().st_size
-                    except OSError:
-                        # Skip files we can't stat (permissions, broken symlinks)
-                        pass
         except OSError:
             # If we can't traverse, return 0 and let tar fail with a better error
             pass
@@ -261,16 +259,14 @@ def main() -> None:
         metadata_flag = cast("bool", args.metadata)
         if metadata_flag:
             metadata = {
-                "timestamp": datetime.now(tz=UTC).isoformat(),
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
                 "folder_name": Path(folder_path).name,
                 "folder_path": folder_path,
                 "original_size_bytes": folder_size,
                 "encoded_size_bytes": len(encoded),
                 "chunk_size_kb": chunk_size,
                 "total_chunks": len(chunks) if chunks else 1,
-                "compression_ratio": folder_size / len(encoded)
-                if len(encoded) > 0
-                else 0,
+                "compression_ratio": folder_size / len(encoded) if len(encoded) > 0 else 0,
             }
 
         # Handle output
@@ -300,7 +296,7 @@ def main() -> None:
         if chunks and chunk_dir:
             # Save chunks to individual files
             Path(chunk_dir).mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
             folder_name = Path(folder_path).name
 
             for i, chunk in enumerate(chunks, 1):
@@ -318,9 +314,7 @@ def main() -> None:
 
             # Save metadata file if requested
             if metadata:
-                metadata_file = (
-                    Path(chunk_dir) / f"{folder_name}_{timestamp}_metadata.json"
-                )
+                metadata_file = Path(chunk_dir) / f"{folder_name}_{timestamp}_metadata.json"
                 with metadata_file.open("w") as f:
                     json.dump(metadata, f, indent=2)
                 if verbose:
@@ -374,7 +368,7 @@ def main() -> None:
         if verbose:
             print("Encoding completed successfully", file=sys.stderr)
 
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 

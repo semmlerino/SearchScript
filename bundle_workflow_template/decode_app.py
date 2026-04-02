@@ -93,7 +93,7 @@ def decode_bundle(
         try:
             tar_data = base64.b64decode(encoded_data)
             print(f"Decoded to {len(tar_data)} bytes")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"ERROR: Base64 decode failed: {e}")
             print(f"Data length: {len(encoded_data)}")
             return False
@@ -109,9 +109,7 @@ def decode_bundle(
                 return first.split("/")[0] if "/" in first else first
             return None
 
-        def _do_extraction(
-            tar: tarfile.TarFile, output_dir: str, list_only: bool
-        ) -> bool:
+        def _do_extraction(tar: tarfile.TarFile, output_dir: str, list_only: bool) -> bool:
             """Extract archive with cleanup on failure."""
             members = tar.getmembers()
             print(f"Found {len(members)} items in archive")
@@ -128,7 +126,7 @@ def decode_bundle(
                 tar.extractall(path=output_dir)
                 print(f"Successfully extracted to {output_dir}")
                 return True
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 print(f"ERROR: Extraction failed: {e}")
                 _cleanup_partial_extraction(output_dir, root_name)
                 return False
@@ -144,14 +142,14 @@ def decode_bundle(
             try:
                 with tarfile.open(fileobj=tar_buffer, mode="r:") as tar:
                     return _do_extraction(tar, output_dir, list_only)
-            except Exception as e2:  # noqa: BLE001
+            except Exception as e2:
                 print(f"ERROR: Archive extraction failed: {e} / {e2}")
                 return False
 
     except FileNotFoundError:
         print(f"ERROR: File not found: {encoded_file}")
         return False
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"ERROR: Unexpected error: {e}")
         import traceback
 
@@ -176,9 +174,7 @@ Examples:
         """,
     )
 
-    _ = parser.add_argument(
-        "encoded_file", help="Path to the base64-encoded bundle file"
-    )
+    _ = parser.add_argument("encoded_file", help="Path to the base64-encoded bundle file")
 
     _ = parser.add_argument(
         "-o",
