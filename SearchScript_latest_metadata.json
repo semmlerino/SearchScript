@@ -1,0 +1,13 @@
+{
+  "timestamp": "2026-04-02T22:39:52.157386+00:00",
+  "folder_name": "search_script_bundle_temp",
+  "folder_path": "/tmp/search_script_bundle_temp",
+  "original_size_bytes": 50950,
+  "encoded_size_bytes": 16612,
+  "chunk_size_kb": 5120,
+  "total_chunks": 1,
+  "compression_ratio": 3.067059956657838,
+  "source_commit": "d440a2e712e908861f711df10fc0f714ee746785",
+  "source_branch": "main",
+  "bundle_timestamp": "2026-04-02T22:39:52.442660+00:00"
+}
