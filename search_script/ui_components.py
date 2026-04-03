@@ -1,6 +1,8 @@
 import csv
 import json
 import logging
+import os
+import re
 from collections.abc import Callable
 
 from PySide6.QtCore import Qt
@@ -24,7 +26,26 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .search_engine import RAPIDFUZZ_AVAILABLE
+from .search_engine import RAPIDFUZZ_AVAILABLE, SearchResult
+
+SORT_ROLE = int(Qt.ItemDataRole.UserRole)
+RESULT_ROLE = SORT_ROLE + 1
+
+
+class ResultTreeWidgetItem(QTreeWidgetItem):
+    """Tree item with numeric/date-aware sorting using stored sort keys."""
+
+    def __lt__(self, other: QTreeWidgetItem) -> bool:
+        tree = self.treeWidget()
+        column = tree.sortColumn() if tree is not None else 0
+        left = self.data(column, SORT_ROLE)
+        right = other.data(column, SORT_ROLE)
+        if left is not None and right is not None:
+            try:
+                return left < right
+            except TypeError:
+                pass
+        return super().__lt__(other)
 
 
 class SearchUI(QMainWindow):
@@ -277,15 +298,9 @@ class SearchUI(QMainWindow):
                 "search_within_files": self.within_checkbox.isChecked(),
                 "search_mode": self.mode_combo.currentText(),
                 "search_backend": self.backend_combo.currentText(),
-                "max_depth": (
-                    int(self.depth_entry.text()) if self.depth_entry.text().strip() else None
-                ),
-                "min_size": (
-                    int(self.min_size_entry.text()) if self.min_size_entry.text().strip() else None
-                ),
-                "max_size": (
-                    int(self.max_size_entry.text()) if self.max_size_entry.text().strip() else None
-                ),
+                "max_depth": self._parse_optional_int(self.depth_entry.text()),
+                "min_size": self._parse_optional_int(self.min_size_entry.text()),
+                "max_size": self._parse_optional_int(self.max_size_entry.text()),
                 "match_folders": self.match_folders_checkbox.isChecked(),
                 "follow_symlinks": self.follow_symlinks_checkbox.isChecked(),
             }
@@ -298,12 +313,42 @@ class SearchUI(QMainWindow):
 
     def _validate_inputs(self) -> bool:
         """Validate user inputs."""
-        if not self.dir_entry.text():
+        directory = self.dir_entry.text().strip()
+        if not directory:
             QMessageBox.warning(self, "Input Error", "Please select a directory to search.")
             return False
+        if not os.path.isdir(directory):
+            QMessageBox.warning(self, "Input Error", "Please select a valid directory.")
+            return False
 
-        if not self.search_entry.text():
+        search_term = self.search_entry.text().strip()
+        if not search_term:
             QMessageBox.warning(self, "Input Error", "Please enter a search term.")
+            return False
+
+        if self.mode_combo.currentText() == "regex":
+            try:
+                re.compile(search_term)
+            except re.error as exc:
+                QMessageBox.warning(self, "Input Error", f"Invalid regular expression: {exc}")
+                return False
+
+        for label, widget in (
+            ("Max depth", self.depth_entry),
+            ("Min size", self.min_size_entry),
+            ("Max size", self.max_size_entry),
+        ):
+            raw = widget.text().strip()
+            if not raw:
+                continue
+            if not raw.isdigit():
+                QMessageBox.warning(self, "Input Error", f"{label} must be a non-negative integer.")
+                return False
+
+        min_size = self._parse_optional_int(self.min_size_entry.text())
+        max_size = self._parse_optional_int(self.max_size_entry.text())
+        if min_size is not None and max_size is not None and min_size > max_size:
+            QMessageBox.warning(self, "Input Error", "Min size cannot be greater than max size.")
             return False
 
         return True
@@ -311,8 +356,8 @@ class SearchUI(QMainWindow):
     def _on_result_double_click(self, item: QTreeWidgetItem, column: int):
         """Handle result double-click."""
         if self.on_result_double_click:
-            file_path = item.text(0)
-            self.on_result_double_click(file_path)
+            result = item.data(0, RESULT_ROLE)
+            self.on_result_double_click(result or item.text(0))
 
     def _show_context_menu(self, pos):
         """Show context menu on right-click."""
@@ -329,7 +374,8 @@ class SearchUI(QMainWindow):
         if self.on_open_containing_folder:
             item = self.results_tree.currentItem()
             if item:
-                file_path = item.text(0)
+                result = item.data(0, RESULT_ROLE) or {}
+                file_path = result.get("file_path", item.text(0))
                 self.on_open_containing_folder(file_path)
 
     def _apply_preset(self, preset: str):
@@ -373,14 +419,53 @@ class SearchUI(QMainWindow):
         """Clear the results tree."""
         self.results_tree.clear()
 
-    def add_results_batch(self, items: list[tuple[str, str, str, str]]) -> None:
+    def add_results_batch(self, items: list[SearchResult]) -> None:
         """Add multiple results efficiently using addTopLevelItems."""
-        tree_items: list[QTreeWidgetItem] = []
-        for file_path, display_text, file_size, mod_time in items:
-            item = QTreeWidgetItem([file_path, display_text, file_size, mod_time])
-            item.setData(0, Qt.ItemDataRole.UserRole, file_path)
-            tree_items.append(item)
+        tree_items = [self._create_result_item(result) for result in items]
         self.results_tree.addTopLevelItems(tree_items)
+
+    def _create_result_item(self, result: SearchResult) -> ResultTreeWidgetItem:
+        """Convert a SearchResult into a sortable tree row with attached metadata."""
+        item = ResultTreeWidgetItem(
+            [
+                result.file_path,
+                result.display_text,
+                result.formatted_size,
+                result.formatted_mod_time,
+            ]
+        )
+        metadata = self._serialize_result(result)
+        item.setData(0, SORT_ROLE, result.file_path.lower())
+        item.setData(0, RESULT_ROLE, metadata)
+        item.setData(1, SORT_ROLE, result.line_number if result.line_number is not None else -1)
+        item.setData(2, SORT_ROLE, result.file_size if result.file_size is not None else -1)
+        item.setData(3, SORT_ROLE, result.mod_time if result.mod_time is not None else -1.0)
+        item.setToolTip(0, result.file_path)
+        if result.line_content:
+            tooltip = result.line_content
+            if result.next_line:
+                tooltip = f"{tooltip}\n{result.next_line}"
+            item.setToolTip(1, tooltip)
+        return item
+
+    def _serialize_result(self, result: SearchResult) -> dict[str, str | int | float | None]:
+        """Convert a SearchResult into exportable metadata."""
+        return {
+            "file_path": result.file_path,
+            "line_number": result.line_number,
+            "line_content": result.line_content,
+            "next_line": result.next_line,
+            "file_size": result.file_size,
+            "mod_time": result.mod_time,
+            "formatted_size": result.formatted_size,
+            "formatted_mod_time": result.formatted_mod_time,
+            "match_score": result.match_score,
+        }
+
+    def _parse_optional_int(self, value: str) -> int | None:
+        """Parse an optional integer field after validation has run."""
+        raw = value.strip()
+        return int(raw) if raw else None
 
     def update_status(self, message: str):
         """Update status label text."""
@@ -402,30 +487,65 @@ class SearchUI(QMainWindow):
         if not file_path:
             return
 
-        rows = []
+        rows: list[dict[str, str | int | float | None]] = []
         for i in range(self.results_tree.topLevelItemCount()):
             item = self.results_tree.topLevelItem(i)
             if item is not None:
-                rows.append((item.text(0), item.text(1), item.text(2), item.text(3)))
+                metadata = item.data(0, RESULT_ROLE)
+                if metadata:
+                    rows.append(metadata)
 
         if file_path.endswith(".json"):
-            data = [
-                {"file_path": r[0], "matching_line": r[1], "size": r[2], "last_modified": r[3]}
-                for r in rows
-            ]
             with open(file_path, "w") as f:
-                json.dump(data, f, indent=2)
+                json.dump(rows, f, indent=2)
         elif file_path.endswith(".csv"):
             with open(file_path, "w", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["File Path", "Matching Line", "Size", "Last Modified"])
-                writer.writerows(rows)
+                writer.writerow(
+                    [
+                        "File Path",
+                        "Line Number",
+                        "Matching Line",
+                        "Next Line",
+                        "Size Bytes",
+                        "Last Modified",
+                        "Match Score",
+                    ]
+                )
+                for row in rows:
+                    writer.writerow(
+                        [
+                            row["file_path"],
+                            row["line_number"],
+                            row["line_content"],
+                            row["next_line"],
+                            row["file_size"],
+                            row["formatted_mod_time"],
+                            row["match_score"],
+                        ]
+                    )
         else:
             with open(file_path, "w") as f:
-                for r in rows:
-                    f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\n")
+                for row in rows:
+                    f.write(
+                        f"{row['file_path']}\t{row['line_number'] or ''}\t"
+                        f"{row['line_content'] or ''}\t{row['formatted_size']}\t"
+                        f"{row['formatted_mod_time']}\n"
+                    )
 
         QMessageBox.information(self, "Export", f"Exported {len(rows)} results to {file_path}")
 
     def get_search_term(self) -> str:
         return self.search_entry.text()
+
+    def get_result_summary(self) -> tuple[int, int]:
+        """Return displayed match count and unique file count."""
+        match_count = self.results_tree.topLevelItemCount()
+        file_paths: set[str] = set()
+        for index in range(match_count):
+            item = self.results_tree.topLevelItem(index)
+            if item is None:
+                continue
+            metadata = item.data(0, RESULT_ROLE) or {}
+            file_paths.add(str(metadata.get("file_path", item.text(0))))
+        return match_count, len(file_paths)

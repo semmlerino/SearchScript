@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -20,14 +21,17 @@ class FileOperations:
             self.logger.error(f"Error getting modification time for {file_path}: {e}")
             return "N/A"
 
-    def open_file(self, file_path: str) -> bool:
+    def open_file(self, file_path: str, line_number: int | None = None) -> bool:
         """Open file with default application."""
         if not os.path.exists(file_path):
             self.logger.warning(f"File does not exist: {file_path}")
             return False
 
         try:
-            if sys.platform.startswith("darwin"):
+            vscode = shutil.which("code")
+            if line_number is not None and vscode:
+                subprocess.call((vscode, "--goto", f"{file_path}:{line_number}"))
+            elif sys.platform.startswith("darwin"):
                 subprocess.call(("open", file_path))
             elif os.name == "nt":
                 os.startfile(file_path)
@@ -87,4 +91,3 @@ class LoggingConfig:
         logger = logging.getLogger(__name__)
         logger.info("Logging initialized")
         return logger
-

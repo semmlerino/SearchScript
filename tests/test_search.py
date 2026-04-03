@@ -9,11 +9,14 @@ from typing import cast
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import QApplication
 
+from search_script.config import ValidationError
 from search_script.file_utils import FileOperations
 from search_script.search_controller import SearchController
 from search_script.search_engine import SearchBackend, SearchEngine, SearchMode, SearchResult
+from search_script.ui_components import SearchUI
 
 
 @pytest.fixture(scope="module")
@@ -99,6 +102,26 @@ def test_content_search_with_type_filter(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep unavailable")
+def test_ripgrep_glob_backend_matches_content(tmp_path):
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("Hello there\nGeneral Kenobi", encoding="utf-8")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "hello",
+            search_within_files=True,
+            search_mode=SearchMode.GLOB,
+            search_backend=SearchBackend.RIPGREP,
+        )
+    )
+
+    assert len(results) == 1
+    assert results[0].line_content == "Hello there"
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep unavailable")
 def test_ripgrep_backend_respects_modified_date_filter(tmp_path):
     old_file = tmp_path / "old.txt"
     new_file = tmp_path / "new.txt"
@@ -134,6 +157,22 @@ def test_file_modification_time():
     assert mod_time == "N/A"
 
 
+def test_invalid_regex_raises_validation_error(tmp_path):
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("hello", encoding="utf-8")
+
+    engine = SearchEngine()
+    with pytest.raises(ValidationError):
+        list(
+            engine.search_files(
+                str(tmp_path),
+                "([",
+                search_within_files=True,
+                search_mode=SearchMode.REGEX,
+            )
+        )
+
+
 
 def test_fuzzy_filename_search(tmp_path):
     (tmp_path / "configuration.txt").write_text("data")
@@ -148,6 +187,26 @@ def test_fuzzy_filename_search(tmp_path):
     )
     assert len(results) == 1
     assert "configuration" in results[0].file_path
+
+
+def test_fuzzy_filename_search_ranks_relevant_matches(tmp_path):
+    (tmp_path / "configuration.txt").write_text("data")
+    (tmp_path / "congratulation.txt").write_text("data")
+    (tmp_path / "readme.md").write_text("data")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "configration",
+            search_within_files=False,
+            search_mode=SearchMode.FUZZY,
+        )
+    )
+
+    assert results
+    assert results[0].file_path.endswith("configuration.txt")
+    assert all("readme" not in result.file_path for result in results)
 
 
 def test_fuzzy_content_search(tmp_path):
@@ -180,6 +239,24 @@ def test_search_results_carry_mod_time(tmp_path):
     results = list(engine.search_files(str(tmp_path), "test", search_within_files=False))
     assert results[0].mod_time is not None
     assert results[0].formatted_mod_time != "N/A"
+
+
+def test_utf16_content_search_python_backend(tmp_path):
+    test_file = tmp_path / "notes.txt"
+    test_file.write_text("needle here\n", encoding="utf-16")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "needle",
+            search_within_files=True,
+            search_backend=SearchBackend.PYTHON,
+        )
+    )
+
+    assert len(results) == 1
+    assert results[0].line_content == "needle here"
 
 
 def test_ripgrep_backend_falls_back_to_python_when_unavailable(tmp_path):
@@ -235,6 +312,41 @@ def test_controller_drain_remaining_results(qapp):
     controller.ui.close()
 
 
+def test_controller_search_worker_batches_results(qapp):
+    controller = SearchController()
+
+    def fake_search_files(**kwargs):
+        yield SearchResult("/tmp/a.txt", 1, "alpha", None, mod_time=1.0, file_size=1)
+        yield SearchResult("/tmp/b.txt", 2, "beta", None, mod_time=2.0, file_size=2)
+
+    controller.search_engine.search_files = fake_search_files  # type: ignore[method-assign]
+    controller._search_worker(
+        {
+            "directory": ".",
+            "search_term": "x",
+            "include_types": [],
+            "exclude_types": [],
+            "search_within_files": True,
+            "search_mode": "substring",
+            "search_backend": "python",
+            "max_depth": None,
+            "min_size": None,
+            "max_size": None,
+            "modified_after": None,
+            "modified_before": None,
+            "match_folders": False,
+            "follow_symlinks": False,
+        }
+    )
+
+    msg_type, batch = controller.result_queue.get_nowait()
+    assert msg_type == "results_batch"
+    assert isinstance(batch, list)
+    assert len(batch) == 2
+    assert controller.result_queue.get_nowait() == ("done", 2)
+    controller.ui.close()
+
+
 def test_controller_search_worker_forwards_backend_and_dates(qapp):
     controller = SearchController()
     captured: dict[str, object] = {}
@@ -272,3 +384,50 @@ def test_controller_search_worker_forwards_backend_and_dates(qapp):
     controller.ui.close()
 
 
+def test_controller_build_modified_date_filters_includes_full_day(qapp):
+    controller = SearchController()
+    controller.ui.modified_after_entry.setDate(QDate(2025, 1, 1))
+    controller.ui.modified_before_entry.setDate(QDate(2025, 1, 1))
+
+    modified_after, modified_before = controller._build_modified_date_filters()
+
+    assert modified_after == datetime(2025, 1, 1, 0, 0, 0)
+    assert modified_before == datetime(2025, 1, 1, 23, 59, 59, 999999)
+    controller.ui.close()
+
+
+def test_ui_rejects_invalid_numeric_filter(qapp, monkeypatch):
+    messages: list[str] = []
+    ui = SearchUI()
+    ui.dir_entry.setText(os.getcwd())
+    ui.search_entry.setText("needle")
+    ui.min_size_entry.setText("abc")
+    monkeypatch.setattr(
+        "search_script.ui_components.QMessageBox.warning",
+        lambda *args: messages.append(str(args[-1])),
+    )
+
+    assert not ui._validate_inputs()
+    assert messages
+    ui.close()
+
+
+def test_results_tree_sorts_size_numerically(qapp):
+    ui = SearchUI()
+    ui.add_results_batch(
+        [
+            SearchResult("/tmp/a.txt", file_size=2048, mod_time=1.0),
+            SearchResult("/tmp/b.txt", file_size=10, mod_time=2.0),
+            SearchResult("/tmp/c.txt", file_size=104857600, mod_time=3.0),
+        ]
+    )
+
+    ui.results_tree.sortItems(2, Qt.SortOrder.AscendingOrder)
+    sizes = []
+    for i in range(ui.results_tree.topLevelItemCount()):
+        item = ui.results_tree.topLevelItem(i)
+        assert item is not None
+        sizes.append(item.text(2))
+
+    assert sizes == ["10 B", "2.0 KB", "100.0 MB"]
+    ui.close()

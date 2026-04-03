@@ -1,3 +1,4 @@
+import codecs
 import fnmatch
 import json
 import logging
@@ -34,6 +35,7 @@ class SearchResult:
     next_line: str | None = None
     mod_time: float | None = None
     file_size: int | None = None
+    match_score: float | None = None
 
     @property
     def display_text(self) -> str:
@@ -70,6 +72,14 @@ class SearchBackend(Enum):
     AUTO = "auto"
     PYTHON = "python"
     RIPGREP = "ripgrep"
+
+
+@dataclass(frozen=True)
+class MatchPlan:
+    mode: SearchMode
+    raw_term: str
+    normalized_term: str
+    regex: re.Pattern[str] | None = None
 
 
 class SearchEngine:
@@ -191,29 +201,24 @@ class SearchEngine:
         # Validate inputs
         self._validate_search_params(directory, search_term)
 
-        include_types = [ext.lower() for ext in (include_types or [])]
-        exclude_types = [ext.lower() for ext in (exclude_types or [])]
-
-        if search_mode == SearchMode.REGEX:
-            try:
-                re.compile(search_term)
-            except re.error:
-                self.logger.debug("Skipping invalid regex search term")
-                return
+        include_types = self._normalize_file_types(include_types)
+        exclude_types = self._normalize_file_types(exclude_types)
+        match_plan = self._build_match_plan(search_term, search_mode)
+        modified_after_ts = modified_after.timestamp() if modified_after is not None else None
+        modified_before_ts = modified_before.timestamp() if modified_before is not None else None
 
         backend = self._resolve_search_backend(search_within_files, search_mode, search_backend)
         if backend == SearchBackend.RIPGREP:
             yield from self._search_file_content_with_ripgrep(
                 directory=directory,
-                search_term=search_term,
-                search_mode=search_mode,
+                match_plan=match_plan,
                 include_types=include_types,
                 exclude_types=exclude_types,
                 max_depth=max_depth,
                 min_size=min_size,
                 max_size=max_size,
-                modified_after=modified_after,
-                modified_before=modified_before,
+                modified_after_ts=modified_after_ts,
+                modified_before_ts=modified_before_ts,
                 follow_symlinks=follow_symlinks,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
@@ -221,6 +226,9 @@ class SearchEngine:
             return
 
         files_processed = 0
+        deferred_results: list[SearchResult] | None = (
+            [] if not search_within_files and search_mode == SearchMode.FUZZY else None
+        )
 
         self.logger.debug(f"Starting search in directory: {directory}")
 
@@ -236,8 +244,17 @@ class SearchEngine:
                 if entry is None:
                     if match_folders and not search_within_files:
                         folder_name = os.path.basename(dir_path)
-                        if self._matches_term(folder_name, search_term, search_mode):
-                            yield SearchResult(dir_path)
+                        score = self._score_match(
+                            folder_name,
+                            match_plan,
+                            allow_partial_fuzzy=False,
+                        )
+                        if score is not None:
+                            result = SearchResult(dir_path, match_score=score)
+                            if deferred_results is not None:
+                                deferred_results.append(result)
+                            else:
+                                yield result
                     continue
 
                 file_name = entry.name
@@ -265,7 +282,7 @@ class SearchEngine:
 
                 # Apply size/date filters using the stat we already have
                 if not self._check_file_filters_with_stat(
-                    entry_stat, min_size, max_size, modified_after, modified_before
+                    entry_stat, min_size, max_size, modified_after_ts, modified_before_ts
                 ):
                     files_processed += 1
                     self._update_progress(files_processed, dir_path, progress_callback)
@@ -277,17 +294,23 @@ class SearchEngine:
                 try:
                     if search_within_files:
                         for result in self._search_file_content(
-                            file_path, search_term, search_mode, file_size=entry_stat.st_size
+                            file_path, match_plan, file_size=entry_stat.st_size
                         ):
                             result.mod_time = entry_stat.st_mtime
                             yield result
                     else:
-                        if self._matches_term(file_name, search_term, search_mode):
-                            yield SearchResult(
+                        score = self._score_match(file_name, match_plan, allow_partial_fuzzy=False)
+                        if score is not None:
+                            result = SearchResult(
                                 str(file_path),
                                 mod_time=entry_stat.st_mtime,
                                 file_size=entry_stat.st_size,
+                                match_score=score,
                             )
+                            if deferred_results is not None:
+                                deferred_results.append(result)
+                            else:
+                                yield result
                 except FileAccessError as e:
                     self.logger.warning(f"Skipping file due to access error: {e}")
                     continue
@@ -303,6 +326,13 @@ class SearchEngine:
             self.logger.error(f"Unexpected error during search: {e}")
             raise SearchError(f"Search operation failed: {e!s}") from e
 
+        if deferred_results:
+            deferred_results.sort(
+                key=lambda result: (result.match_score or 0.0, result.file_path.lower()),
+                reverse=True,
+            )
+            yield from deferred_results
+
     def _validate_search_params(self, directory: str, search_term: str):
         """Validate search parameters."""
         if not directory or not directory.strip():
@@ -316,6 +346,34 @@ class SearchEngine:
 
         if not search_term or not search_term.strip():
             raise ValidationError("Search term cannot be empty")
+
+    def _normalize_file_types(self, file_types: list[str] | None) -> list[str]:
+        """Normalize file type filters to lower-case extensions."""
+        normalized: list[str] = []
+        for file_type in file_types or []:
+            value = file_type.strip().lower()
+            if not value:
+                continue
+            if not value.startswith(".") and not any(char in value for char in "*?[]"):
+                value = f".{value}"
+            normalized.append(value)
+        return normalized
+
+    def _build_match_plan(self, search_term: str, search_mode: SearchMode) -> MatchPlan:
+        """Compile reusable match state for the active query."""
+        normalized_term = search_term.lower()
+        regex: re.Pattern[str] | None = None
+        if search_mode == SearchMode.REGEX:
+            try:
+                regex = re.compile(search_term, re.IGNORECASE)
+            except re.error as exc:
+                raise ValidationError(f"Invalid regular expression: {exc}") from exc
+        return MatchPlan(
+            mode=search_mode,
+            raw_term=search_term,
+            normalized_term=normalized_term,
+            regex=regex,
+        )
 
     def _is_likely_binary(self, file_path: Path) -> bool:
         """Return True if the file appears to be binary (contains null bytes in the first 8 KB)."""
@@ -363,56 +421,123 @@ class SearchEngine:
             return SearchBackend.PYTHON
         return SearchBackend.RIPGREP
 
-    def _matches_term(self, text: str, search_term: str, mode: SearchMode) -> bool:
-        """Match text against search_term using the specified mode."""
-        if mode == SearchMode.SUBSTRING:
-            return search_term.lower() in text.lower()
-        elif mode == SearchMode.GLOB:
-            has_glob_chars = any(c in search_term for c in "*?[]")
-            pattern = search_term if has_glob_chars else f"*{search_term}*"
-            return fnmatch.fnmatch(text.lower(), pattern.lower())
-        elif mode == SearchMode.REGEX:
-            try:
-                return bool(re.search(search_term, text, re.IGNORECASE))
-            except re.error:
-                return False
-        elif mode == SearchMode.FUZZY:
-            if not RAPIDFUZZ_AVAILABLE:
-                return False
-            return fuzz.partial_ratio(search_term.lower(), text.lower()) >= 70  # pyright: ignore[reportPossiblyUnboundVariable]
-        return False
+    def _score_match(
+        self,
+        text: str,
+        match_plan: MatchPlan,
+        *,
+        allow_partial_fuzzy: bool,
+    ) -> float | None:
+        """Return a match score, or None when the text does not match."""
+        if match_plan.mode == SearchMode.SUBSTRING:
+            return 100.0 if match_plan.normalized_term in text.lower() else None
+        if match_plan.mode == SearchMode.GLOB:
+            has_glob_chars = any(c in match_plan.raw_term for c in "*?[]")
+            pattern = match_plan.raw_term if has_glob_chars else f"*{match_plan.raw_term}*"
+            return 100.0 if fnmatch.fnmatch(text.lower(), pattern.lower()) else None
+        if match_plan.mode == SearchMode.REGEX:
+            assert match_plan.regex is not None
+            return 100.0 if match_plan.regex.search(text) else None
+        if match_plan.mode == SearchMode.FUZZY:
+            return self._score_fuzzy_match(
+                text, match_plan.normalized_term, allow_partial_fuzzy=allow_partial_fuzzy
+            )
+        return None
+
+    def _matches_term(
+        self, text: str, match_plan: MatchPlan, *, allow_partial_fuzzy: bool = True
+    ) -> bool:
+        """Return True when the text matches the compiled plan."""
+        return (
+            self._score_match(
+                text,
+                match_plan,
+                allow_partial_fuzzy=allow_partial_fuzzy,
+            )
+            is not None
+        )
+
+    def _score_fuzzy_match(
+        self, text: str, normalized_term: str, *, allow_partial_fuzzy: bool
+    ) -> float | None:
+        """Compute a fuzzy score with tighter thresholds for filename matching."""
+        if not RAPIDFUZZ_AVAILABLE or not normalized_term:
+            return None
+
+        normalized_text = text.lower()
+        if normalized_text == normalized_term:
+            return 120.0
+
+        wratio = float(fuzz.WRatio(normalized_term, normalized_text))  # pyright: ignore[reportPossiblyUnboundVariable]
+        score = wratio
+        if allow_partial_fuzzy:
+            partial = float(
+                fuzz.partial_ratio(normalized_term, normalized_text)  # pyright: ignore[reportPossiblyUnboundVariable]
+            )
+            score = max(score, partial * 0.9)
+            threshold = 78.0
+        else:
+            simple = float(fuzz.ratio(normalized_term, normalized_text))  # pyright: ignore[reportPossiblyUnboundVariable]
+            partial = float(
+                fuzz.partial_ratio(normalized_term, normalized_text)  # pyright: ignore[reportPossiblyUnboundVariable]
+            )
+            score = max(score, simple, partial * 0.85)
+            threshold = 80.0
+            if normalized_text.startswith(normalized_term):
+                score += 4.0
+            elif normalized_term in normalized_text:
+                score += 2.0
+
+        return score if score >= threshold else None
 
     def _check_file_filters_with_stat(
         self,
         stat_result: os.stat_result,
         min_size: int | None,
         max_size: int | None,
-        modified_after: datetime | None,
-        modified_before: datetime | None,
+        modified_after_ts: float | None,
+        modified_before_ts: float | None,
     ) -> bool:
         """Return True if the file passes all size/date filters (using pre-fetched stat)."""
         if min_size is not None and stat_result.st_size < min_size:
             return False
         if max_size is not None and stat_result.st_size > max_size:
             return False
-        if modified_after is not None or modified_before is not None:
-            mod_time = datetime.fromtimestamp(stat_result.st_mtime)
-            if modified_after and mod_time < modified_after:
-                return False
-            if modified_before and mod_time > modified_before:
-                return False
-        return True
+        mod_time = stat_result.st_mtime
+        if modified_after_ts is not None and mod_time < modified_after_ts:
+            return False
+        return modified_before_ts is None or mod_time <= modified_before_ts
 
     def _detect_encoding(self, file_path: Path) -> str:
         """Detect file encoding using chardet if available, otherwise fall back to utf-8."""
-        if self._chardet is None:
-            return "utf-8"
         try:
             with open(file_path, "rb") as f:
                 raw = f.read(4096)
-            detected = self._chardet.detect(raw)
-            if detected and detected.get("confidence", 0) > 0.5:
-                return detected["encoding"] or "utf-8"
+
+            if raw.startswith(codecs.BOM_UTF8):
+                return "utf-8-sig"
+            if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+                return "utf-16"
+            if raw.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+                return "utf-32"
+
+            if self._chardet is not None:
+                detected = self._chardet.detect(raw)
+                if detected and detected.get("confidence", 0) > 0.5:
+                    return detected["encoding"] or "utf-8"
+
+            if raw:
+                even_nulls = raw[::2].count(0)
+                odd_nulls = raw[1::2].count(0)
+                if even_nulls > len(raw[::2]) // 4 or odd_nulls > len(raw[1::2]) // 4:
+                    return "utf-16"
+
+            for encoding in ("utf-8", "utf-8-sig", "utf-16"):
+                try:
+                    raw.decode(encoding)
+                    return encoding
+                except UnicodeDecodeError:
+                    continue
         except Exception:
             pass
         return "utf-8"
@@ -420,8 +545,7 @@ class SearchEngine:
     def _search_file_content(
         self,
         file_path: Path,
-        search_term: str,
-        search_mode: SearchMode = SearchMode.SUBSTRING,
+        match_plan: MatchPlan,
         file_size: int = 0,
     ) -> Generator[SearchResult, None, None]:
         """Search within file content for the search term using optimized methods."""
@@ -429,18 +553,17 @@ class SearchEngine:
             return
         if file_size > 1024 * 1024:
             yield from self._search_large_file(
-                file_path, search_term, search_mode, file_size=file_size
+                file_path, match_plan, file_size=file_size
             )
         else:
             yield from self._search_small_file(
-                file_path, search_term, search_mode, file_size=file_size
+                file_path, match_plan, file_size=file_size
             )
 
     def _search_small_file(
         self,
         file_path: Path,
-        search_term: str,
-        search_mode: SearchMode = SearchMode.SUBSTRING,
+        match_plan: MatchPlan,
         file_size: int | None = None,
     ) -> Generator[SearchResult, None, None]:
         """Search small files using standard file reading."""
@@ -449,7 +572,8 @@ class SearchEngine:
             with open(file_path, encoding=encoding, errors="ignore") as f:
                 lines = f.readlines()
             for i, line in enumerate(lines):
-                if self._matches_term(line, search_term, search_mode):
+                score = self._score_match(line, match_plan, allow_partial_fuzzy=True)
+                if score is not None:
                     line_content = line.strip()
                     if len(line_content) > 2000:
                         line_content = line_content[:2000] + "..."
@@ -457,7 +581,12 @@ class SearchEngine:
                     if next_line and len(next_line) > 2000:
                         next_line = next_line[:2000] + "..."
                     yield SearchResult(
-                        str(file_path), i + 1, line_content, next_line, file_size=file_size
+                        str(file_path),
+                        i + 1,
+                        line_content,
+                        next_line,
+                        file_size=file_size,
+                        match_score=score,
                     )
         except PermissionError as e:
             raise FileAccessError(f"Permission denied reading file: {file_path}") from e
@@ -469,15 +598,14 @@ class SearchEngine:
     def _search_file_content_with_ripgrep(
         self,
         directory: str,
-        search_term: str,
-        search_mode: SearchMode,
+        match_plan: MatchPlan,
         include_types: list[str],
         exclude_types: list[str],
         max_depth: int | None,
         min_size: int | None,
         max_size: int | None,
-        modified_after: datetime | None,
-        modified_before: datetime | None,
+        modified_after_ts: float | None,
+        modified_before_ts: float | None,
         follow_symlinks: bool,
         progress_callback=None,
         cancel_event: threading.Event | None = None,
@@ -488,8 +616,7 @@ class SearchEngine:
 
         command = self._build_ripgrep_command(
             directory=directory,
-            search_term=search_term,
-            search_mode=search_mode,
+            match_plan=match_plan,
             include_types=include_types,
             exclude_types=exclude_types,
             max_depth=max_depth,
@@ -512,17 +639,25 @@ class SearchEngine:
             self.logger.warning(f"ripgrep backend unavailable, falling back to Python search: {e}")
             yield from self.search_files(
                 directory=directory,
-                search_term=search_term,
+                search_term=match_plan.raw_term,
                 include_types=include_types,
                 exclude_types=exclude_types,
                 search_within_files=True,
-                search_mode=search_mode,
+                search_mode=match_plan.mode,
                 search_backend=SearchBackend.PYTHON,
                 max_depth=max_depth,
                 min_size=min_size,
                 max_size=max_size,
-                modified_after=modified_after,
-                modified_before=modified_before,
+                modified_after=(
+                    datetime.fromtimestamp(modified_after_ts)
+                    if modified_after_ts is not None
+                    else None
+                ),
+                modified_before=(
+                    datetime.fromtimestamp(modified_before_ts)
+                    if modified_before_ts is not None
+                    else None
+                ),
                 follow_symlinks=follow_symlinks,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
@@ -579,7 +714,7 @@ class SearchEngine:
                     stat_cache[cache_key] = stat_result
 
                 if not self._check_file_filters_with_stat(
-                    stat_result, min_size, max_size, modified_after, modified_before
+                    stat_result, min_size, max_size, modified_after_ts, modified_before_ts
                 ):
                     continue
 
@@ -611,8 +746,7 @@ class SearchEngine:
     def _build_ripgrep_command(
         self,
         directory: str,
-        search_term: str,
-        search_mode: SearchMode,
+        match_plan: MatchPlan,
         include_types: list[str],
         exclude_types: list[str],
         max_depth: int | None,
@@ -643,11 +777,11 @@ class SearchEngine:
         for ext in exclude_types:
             command.extend(["-g", f"!*{ext}"])
 
-        pattern = search_term
-        if search_mode == SearchMode.SUBSTRING:
+        pattern = match_plan.raw_term
+        if match_plan.mode == SearchMode.SUBSTRING:
             command.append("--fixed-strings")
-        elif search_mode == SearchMode.GLOB:
-            pattern = self._translate_glob_to_regex(search_term)
+        elif match_plan.mode == SearchMode.GLOB:
+            pattern = self._translate_glob_to_regex(match_plan.raw_term)
 
         command.extend(["-i", pattern, directory])
         return command
@@ -655,12 +789,42 @@ class SearchEngine:
     def _translate_glob_to_regex(self, search_term: str) -> str:
         """Translate the app's line-glob semantics into a ripgrep-compatible regex."""
         pattern = search_term if any(c in search_term for c in "*?[]") else f"*{search_term}*"
-        translated = fnmatch.translate(pattern)
-        if translated.startswith("(?s:") and translated.endswith(")\\Z"):
-            translated = translated[4:-3]
-        elif translated.endswith("\\Z"):
-            translated = translated[:-2]
-        return f"^{translated}$"
+        translated: list[str] = []
+        idx = 0
+        while idx < len(pattern):
+            char = pattern[idx]
+            if char == "*":
+                translated.append(".*")
+            elif char == "?":
+                translated.append(".")
+            elif char == "[":
+                end = idx + 1
+                while end < len(pattern) and pattern[end] != "]":
+                    end += 1
+                if end >= len(pattern):
+                    translated.append(r"\[")
+                else:
+                    contents = pattern[idx + 1 : end]
+                    negate = contents.startswith(("!", "^"))
+                    if negate:
+                        contents = contents[1:]
+                    safe_contents: list[str] = []
+                    for pos, content_char in enumerate(contents):
+                        if content_char == "\\":
+                            safe_contents.append(r"\\")
+                        elif content_char == "]":
+                            safe_contents.append(r"\]")
+                        elif content_char == "^" and pos == 0:
+                            safe_contents.append(r"\^")
+                        else:
+                            safe_contents.append(content_char)
+                    prefix = "^" if negate else ""
+                    translated.append(f"[{prefix}{''.join(safe_contents)}]")
+                    idx = end
+            else:
+                translated.append(re.escape(char))
+            idx += 1
+        return f"^{''.join(translated)}$"
 
     def _resolve_ripgrep_path(self, search_root: Path, path_info: dict[str, str]) -> Path:
         """Resolve ripgrep's match path into an absolute path under the searched root."""
@@ -691,8 +855,7 @@ class SearchEngine:
     def _search_large_file(
         self,
         file_path: Path,
-        search_term: str,
-        search_mode: SearchMode = SearchMode.SUBSTRING,
+        match_plan: MatchPlan,
         file_size: int | None = None,
     ) -> Generator[SearchResult, None, None]:
         """Search large files using memory mapping for better performance."""
@@ -709,7 +872,12 @@ class SearchEngine:
                             line_bytes = mm[pos:end]
                             line_text = line_bytes.decode(encoding, errors="replace").rstrip("\r")
                             line_no += 1
-                            if self._matches_term(line_text, search_term, search_mode):
+                            score = self._score_match(
+                                line_text,
+                                match_plan,
+                                allow_partial_fuzzy=True,
+                            )
+                            if score is not None:
                                 line_content = line_text.strip()
                                 if len(line_content) > 2000:
                                     line_content = line_content[:2000] + "..."
@@ -734,13 +902,14 @@ class SearchEngine:
                                     line_content,
                                     next_line,
                                     file_size=file_size,
+                                    match_score=score,
                                 )
                             pos = end + 1
 
                 except (OSError, ValueError):
                     # Fallback to regular file reading if mmap fails
                     yield from self._search_small_file(
-                        file_path, search_term, search_mode, file_size=file_size
+                        file_path, match_plan, file_size=file_size
                     )
 
         except PermissionError as e:
