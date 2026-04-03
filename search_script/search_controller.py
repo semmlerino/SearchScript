@@ -29,6 +29,8 @@ class SearchController:
         self.cancel_event = threading.Event()
         self.search_thread: threading.Thread | None = None
         self.result_queue: queue.Queue[tuple[str, object]] = queue.Queue()
+        self.search_was_truncated = False
+        self.search_result_limit: int | None = None
 
         # Setup callbacks
         self._setup_callbacks()
@@ -74,6 +76,14 @@ class SearchController:
         )
         return modified_after, modified_before
 
+    def _coerce_limit_value(self, data: object) -> int | None:
+        """Convert a queue payload into an integer result limit when possible."""
+        if isinstance(data, int):
+            return data
+        if isinstance(data, str) and data.isdigit():
+            return int(data)
+        return None
+
     def _start_search(self, search_params: dict[str, Any]):
         """Start the search operation."""
         self.logger.info(f"Starting search with parameters: {search_params}")
@@ -90,6 +100,8 @@ class SearchController:
         # Setup threading
         self.cancel_event.clear()
         self.result_queue = queue.Queue()
+        self.search_was_truncated = False
+        self.search_result_limit = search_params.get("max_results")
 
         # Start search thread
         self.search_thread = threading.Thread(
@@ -107,6 +119,10 @@ class SearchController:
             batch: list[SearchResult] = []
 
             def progress_callback(message: str):
+                limit_prefix = self.search_engine.LIMIT_REACHED_PREFIX
+                if message.startswith(limit_prefix):
+                    self.result_queue.put(("limit_reached", int(message[len(limit_prefix) :])))
+                    return
                 self.result_queue.put(("status", message))
 
             def flush_batch() -> None:
@@ -131,6 +147,7 @@ class SearchController:
                 max_depth=search_params.get("max_depth"),
                 min_size=search_params.get("min_size"),
                 max_size=search_params.get("max_size"),
+                max_results=search_params.get("max_results"),
                 modified_after=search_params.get("modified_after"),
                 modified_before=search_params.get("modified_before"),
                 match_folders=search_params.get("match_folders", False),
@@ -176,6 +193,9 @@ class SearchController:
                     return
                 elif msg_type == "status":
                     self.ui.update_status(str(data))
+                elif msg_type == "limit_reached":
+                    self.search_was_truncated = True
+                    self.search_result_limit = self._coerce_limit_value(data)
                 elif msg_type == "error":
                     if batch:
                         self.ui.add_results_batch(batch)
@@ -213,7 +233,15 @@ class SearchController:
         """Handle search completion."""
         self.ui.set_search_state(False)
         displayed, file_count = self.ui.get_result_summary()
-        self.ui.update_status(f"Search completed. {displayed} matches across {file_count} files.")
+        if self.search_was_truncated and self.search_result_limit is not None:
+            self.ui.update_status(
+                f"Search completed. Showing {displayed} matches across {file_count} files "
+                f"(limit {self.search_result_limit})."
+            )
+        else:
+            self.ui.update_status(
+                f"Search completed. {displayed} matches across {file_count} files."
+            )
 
         if displayed > 0:
             self.logger.info(f"Search completed with {displayed} matches")
@@ -232,9 +260,10 @@ class SearchController:
         """Handle search cancellation."""
         self.ui.set_search_state(False)
         displayed, file_count = self.ui.get_result_summary()
-        self.ui.update_status(
-            f"Search cancelled. {displayed} matches across {file_count} files shown."
-        )
+        status = f"Search cancelled. {displayed} matches across {file_count} files shown."
+        if self.search_was_truncated and self.search_result_limit is not None:
+            status += f" Result limit {self.search_result_limit} had already been reached."
+        self.ui.update_status(status)
         self.logger.info(message)
 
     def _drain_remaining_results(self) -> tuple[str, object] | None:
@@ -247,6 +276,9 @@ class SearchController:
                     batch.append(data)  # type: ignore[arg-type]
                 elif msg_type == "results_batch":
                     batch.extend(data)  # type: ignore[arg-type]
+                elif msg_type == "limit_reached":
+                    self.search_was_truncated = True
+                    self.search_result_limit = self._coerce_limit_value(data)
                 else:
                     if batch:
                         self.ui.add_results_batch(batch)

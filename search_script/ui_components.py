@@ -169,6 +169,13 @@ class SearchUI(QMainWindow):
         row.addWidget(self.max_size_entry)
         row.addSpacing(15)
 
+        row.addWidget(QLabel("Max results:"))
+        self.max_results_entry = QLineEdit()
+        self.max_results_entry.setFixedWidth(90)
+        self.max_results_entry.setPlaceholderText("optional")
+        row.addWidget(self.max_results_entry)
+        row.addSpacing(15)
+
         self.match_folders_checkbox = QCheckBox("Match folder names")
         row.addWidget(self.match_folders_checkbox)
         self.follow_symlinks_checkbox = QCheckBox("Follow symlinks")
@@ -301,6 +308,7 @@ class SearchUI(QMainWindow):
                 "max_depth": self._parse_optional_int(self.depth_entry.text()),
                 "min_size": self._parse_optional_int(self.min_size_entry.text()),
                 "max_size": self._parse_optional_int(self.max_size_entry.text()),
+                "max_results": self._parse_optional_int(self.max_results_entry.text()),
                 "match_folders": self.match_folders_checkbox.isChecked(),
                 "follow_symlinks": self.follow_symlinks_checkbox.isChecked(),
             }
@@ -343,6 +351,23 @@ class SearchUI(QMainWindow):
                 continue
             if not raw.isdigit():
                 QMessageBox.warning(self, "Input Error", f"{label} must be a non-negative integer.")
+                return False
+
+        max_results_raw = self.max_results_entry.text().strip()
+        if max_results_raw:
+            if not max_results_raw.isdigit():
+                QMessageBox.warning(
+                    self,
+                    "Input Error",
+                    "Max results must be a positive integer.",
+                )
+                return False
+            if int(max_results_raw) <= 0:
+                QMessageBox.warning(
+                    self,
+                    "Input Error",
+                    "Max results must be greater than zero.",
+                )
                 return False
 
         min_size = self._parse_optional_int(self.min_size_entry.text())

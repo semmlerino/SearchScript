@@ -1,9 +1,11 @@
 """Tests for the search application components."""
 
+import gc
 import os
 import queue
 import shutil
 from datetime import datetime, timedelta
+from time import monotonic, sleep
 from typing import cast
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -28,6 +30,15 @@ def qapp():
     yield qt_app
     qt_app.closeAllWindows()
     qt_app.processEvents()
+    gc.collect()
+
+
+def close_widget(widget) -> None:
+    widget.close()
+    widget.deleteLater()
+    app = QApplication.instance()
+    if app is not None:
+        app.processEvents()
 
 
 def test_filename_search(tmp_path):
@@ -232,6 +243,112 @@ def test_filename_search_binary_extension(tmp_path):
     assert results[0].file_path.endswith(".exr")
 
 
+def test_search_engine_reuses_inventory_cache(tmp_path, monkeypatch):
+    for index in range(3):
+        (tmp_path / f"file{index}.txt").write_text("hello", encoding="utf-8")
+
+    engine = SearchEngine()
+    build_calls = 0
+    original = engine._build_inventory_snapshot
+
+    def wrapped(*args, **kwargs):
+        nonlocal build_calls
+        build_calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "_build_inventory_snapshot", wrapped)
+
+    list(engine.search_files(str(tmp_path), "file", search_within_files=False))
+    list(engine.search_files(str(tmp_path), "file", search_within_files=False))
+
+    assert build_calls == 1
+
+
+def test_search_engine_uses_persistent_index_between_instances(tmp_path, monkeypatch):
+    search_root = tmp_path / "search_root"
+    search_root.mkdir()
+    index_db = tmp_path / "inventory.sqlite3"
+    for index in range(3):
+        (search_root / f"file{index}.txt").write_text("hello", encoding="utf-8")
+
+    first_engine = SearchEngine(index_db_path=index_db)
+    first_results = list(
+        first_engine.search_files(str(search_root), "file", search_within_files=False)
+    )
+    assert len(first_results) == 3
+
+    second_engine = SearchEngine(index_db_path=index_db)
+
+    def fail_build(*args, **kwargs):
+        raise AssertionError("persistent index should avoid rebuilding inventory")
+
+    monkeypatch.setattr(second_engine, "_build_inventory_snapshot", fail_build)
+    second_results = list(
+        second_engine.search_files(str(search_root), "file", search_within_files=False)
+    )
+
+    assert len(second_results) == 3
+
+
+def test_search_engine_refreshes_stale_persistent_index_in_background(tmp_path):
+    search_root = tmp_path / "search_root"
+    search_root.mkdir()
+    index_db = tmp_path / "inventory.sqlite3"
+    (search_root / "one.txt").write_text("hello", encoding="utf-8")
+
+    first_engine = SearchEngine(index_db_path=index_db)
+    list(first_engine.search_files(str(search_root), "txt", search_within_files=False))
+
+    (search_root / "two.txt").write_text("hello", encoding="utf-8")
+
+    statuses: list[str] = []
+    second_engine = SearchEngine(index_db_path=index_db)
+    stale_results = list(
+        second_engine.search_files(
+            str(search_root),
+            "txt",
+            search_within_files=False,
+            progress_callback=statuses.append,
+        )
+    )
+
+    deadline = monotonic() + 2.0
+    while monotonic() < deadline:
+        with second_engine._inventory_refresh_lock:
+            if not second_engine._inventory_refreshes:
+                break
+        sleep(0.05)
+
+    with second_engine._inventory_refresh_lock:
+        assert not second_engine._inventory_refreshes
+
+    third_engine = SearchEngine(index_db_path=index_db)
+    fresh_results = list(
+        third_engine.search_files(str(search_root), "txt", search_within_files=False)
+    )
+
+    assert len(stale_results) == 1
+    assert len(fresh_results) == 2
+    assert second_engine.BACKGROUND_REFRESH_STATUS in statuses
+
+
+def test_filename_search_honors_max_results(tmp_path):
+    for index in range(5):
+        (tmp_path / f"target_{index}.txt").write_text("hello", encoding="utf-8")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "target",
+            search_within_files=False,
+            max_results=2,
+        )
+    )
+
+    assert len(results) == 2
+
+
 def test_search_results_carry_mod_time(tmp_path):
     test_file = tmp_path / "test.txt"
     test_file.write_text("hello")
@@ -257,6 +374,25 @@ def test_utf16_content_search_python_backend(tmp_path):
 
     assert len(results) == 1
     assert results[0].line_content == "needle here"
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep unavailable")
+def test_ripgrep_search_honors_max_results(tmp_path):
+    for index in range(4):
+        (tmp_path / f"note_{index}.txt").write_text("needle\nneedle\n", encoding="utf-8")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "needle",
+            search_within_files=True,
+            search_backend=SearchBackend.RIPGREP,
+            max_results=3,
+        )
+    )
+
+    assert len(results) == 3
 
 
 def test_ripgrep_backend_falls_back_to_python_when_unavailable(tmp_path):
@@ -309,7 +445,7 @@ def test_controller_drain_remaining_results(qapp):
         "12 B",
         result.formatted_mod_time,
     ]
-    controller.ui.close()
+    close_widget(controller.ui)
 
 
 def test_controller_search_worker_batches_results(qapp):
@@ -332,6 +468,7 @@ def test_controller_search_worker_batches_results(qapp):
             "max_depth": None,
             "min_size": None,
             "max_size": None,
+            "max_results": None,
             "modified_after": None,
             "modified_before": None,
             "match_folders": False,
@@ -344,7 +481,7 @@ def test_controller_search_worker_batches_results(qapp):
     assert isinstance(batch, list)
     assert len(batch) == 2
     assert controller.result_queue.get_nowait() == ("done", 2)
-    controller.ui.close()
+    close_widget(controller.ui)
 
 
 def test_controller_search_worker_forwards_backend_and_dates(qapp):
@@ -358,6 +495,7 @@ def test_controller_search_worker_forwards_backend_and_dates(qapp):
     controller.search_engine.search_files = fake_search_files  # type: ignore[method-assign]
     modified_after = datetime(2025, 1, 1)
     modified_before = datetime(2025, 12, 31)
+    max_results = 250
 
     controller._search_worker(
         {
@@ -371,6 +509,7 @@ def test_controller_search_worker_forwards_backend_and_dates(qapp):
             "max_depth": None,
             "min_size": None,
             "max_size": None,
+            "max_results": max_results,
             "modified_after": modified_after,
             "modified_before": modified_before,
             "match_folders": False,
@@ -379,9 +518,10 @@ def test_controller_search_worker_forwards_backend_and_dates(qapp):
     )
 
     assert captured["search_backend"] == SearchBackend.RIPGREP
+    assert captured["max_results"] == max_results
     assert captured["modified_after"] == modified_after
     assert captured["modified_before"] == modified_before
-    controller.ui.close()
+    close_widget(controller.ui)
 
 
 def test_controller_build_modified_date_filters_includes_full_day(qapp):
@@ -393,7 +533,7 @@ def test_controller_build_modified_date_filters_includes_full_day(qapp):
 
     assert modified_after == datetime(2025, 1, 1, 0, 0, 0)
     assert modified_before == datetime(2025, 1, 1, 23, 59, 59, 999999)
-    controller.ui.close()
+    close_widget(controller.ui)
 
 
 def test_ui_rejects_invalid_numeric_filter(qapp, monkeypatch):
@@ -409,7 +549,40 @@ def test_ui_rejects_invalid_numeric_filter(qapp, monkeypatch):
 
     assert not ui._validate_inputs()
     assert messages
-    ui.close()
+    close_widget(ui)
+
+
+def test_ui_rejects_non_positive_max_results(qapp, monkeypatch):
+    messages: list[str] = []
+    ui = SearchUI()
+    ui.dir_entry.setText(os.getcwd())
+    ui.search_entry.setText("needle")
+    ui.max_results_entry.setText("0")
+    monkeypatch.setattr(
+        "search_script.ui_components.QMessageBox.warning",
+        lambda *args: messages.append(str(args[-1])),
+    )
+
+    assert not ui._validate_inputs()
+    assert any("greater than zero" in message for message in messages)
+    close_widget(ui)
+
+
+def test_controller_reports_result_limit_in_completion_status(qapp):
+    controller = SearchController()
+    controller.search_was_truncated = True
+    controller.search_result_limit = 2
+    controller.ui.add_results_batch(
+        [
+            SearchResult("/tmp/a.txt", file_size=1, mod_time=1.0),
+            SearchResult("/tmp/b.txt", file_size=2, mod_time=2.0),
+        ]
+    )
+
+    controller._handle_search_complete()
+
+    assert "limit 2" in controller.ui.status_label.text()
+    close_widget(controller.ui)
 
 
 def test_results_tree_sorts_size_numerically(qapp):
@@ -430,4 +603,4 @@ def test_results_tree_sorts_size_numerically(qapp):
         sizes.append(item.text(2))
 
     assert sizes == ["10 B", "2.0 KB", "100.0 MB"]
-    ui.close()
+    close_widget(ui)
