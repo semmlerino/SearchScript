@@ -138,9 +138,7 @@ class SearchIndexStore:
                 directories=directories,
                 created_at=created_at,
                 root_mtime_ns=(
-                    int(stored_root_mtime_ns)
-                    if stored_root_mtime_ns is not None
-                    else None
+                    int(stored_root_mtime_ns) if stored_root_mtime_ns is not None else None
                 ),
             ),
             is_fresh=is_fresh,

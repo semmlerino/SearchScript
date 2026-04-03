@@ -184,7 +184,6 @@ def test_invalid_regex_raises_validation_error(tmp_path):
         )
 
 
-
 def test_fuzzy_filename_search(tmp_path):
     (tmp_path / "configuration.txt").write_text("data")
     (tmp_path / "readme.md").write_text("info")
@@ -604,3 +603,86 @@ def test_results_tree_sorts_size_numerically(qapp):
 
     assert sizes == ["10 B", "2.0 KB", "100.0 MB"]
     close_widget(ui)
+
+
+def test_on_limit_reached_callback_invoked(tmp_path):
+    """on_limit_reached must be called with the limit when results are truncated."""
+    for i in range(5):
+        (tmp_path / f"target_{i}.txt").write_text("hello", encoding="utf-8")
+
+    engine = SearchEngine()
+    called_with: list[int] = []
+
+    list(
+        engine.search_files(
+            str(tmp_path),
+            "target",
+            search_within_files=False,
+            max_results=2,
+            on_limit_reached=called_with.append,
+        )
+    )
+
+    assert called_with == [2]
+
+
+def test_export_results_permission_error_shows_dialog(qapp, tmp_path, monkeypatch):
+    """export_results must show QMessageBox.critical on OSError, not crash silently."""
+    import builtins
+
+    ui = SearchUI()
+    try:
+        # Patch dialog to return a fake path
+        monkeypatch.setattr(
+            "search_script.ui_components.QFileDialog.getSaveFileName",
+            lambda *args, **kwargs: ("/fake/path/results.json", "JSON (*.json)"),
+        )
+        # Patch open to raise PermissionError
+        real_open = builtins.open
+
+        def mock_open(path, *args, **kwargs):
+            if "results.json" in str(path):
+                raise PermissionError("Permission denied")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", mock_open)
+
+        # Track QMessageBox.critical calls
+        critical_calls: list[tuple] = []
+        monkeypatch.setattr(
+            "search_script.ui_components.QMessageBox.critical",
+            lambda *args, **kwargs: critical_calls.append(args),
+        )
+
+        ui.export_results()
+
+        assert len(critical_calls) == 1, "QMessageBox.critical should be called once on error"
+        assert "Export Failed" in critical_calls[0][1]
+    finally:
+        close_widget(ui)
+
+
+def test_search_small_file_attribute_error_propagates(tmp_path):
+    """AttributeError inside _search_small_file must propagate as SearchError,
+    not be silently swallowed as FileAccessError."""
+    from search_script.config import SearchError
+
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("hello world", encoding="utf-8")
+
+    engine = SearchEngine()
+
+    def raise_attribute_error(*args, **kwargs):
+        raise AttributeError("simulated programming error")
+
+    engine._search_small_file = raise_attribute_error  # pyright: ignore[reportAttributeAccessIssue]
+
+    with pytest.raises(SearchError):
+        list(
+            engine.search_files(
+                str(tmp_path),
+                "hello",
+                search_within_files=True,
+                search_backend=SearchBackend.PYTHON,
+            )
+        )

@@ -17,7 +17,7 @@ class FileOperations:
         try:
             mod_timestamp = os.path.getmtime(file_path)
             return datetime.fromtimestamp(mod_timestamp).strftime("%Y-%m-%d %H:%M:%S")
-        except Exception as e:
+        except OSError as e:
             self.logger.error(f"Error getting modification time for {file_path}: {e}")
             return "N/A"
 
@@ -40,7 +40,7 @@ class FileOperations:
 
             self.logger.info(f"Opened file: {file_path}")
             return True
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             self.logger.error(f"Error opening file {file_path}: {e}")
             return False
 
@@ -68,7 +68,7 @@ class FileOperations:
                 self.logger.info(f"Opened folder on POSIX system: {folder_path}")
 
             return True
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             self.logger.error(f"Error opening containing folder for {file_path}: {e}")
             return False
 

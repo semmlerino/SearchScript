@@ -3,9 +3,8 @@ import json
 import logging
 import os
 import re
-from collections.abc import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -49,17 +48,34 @@ class ResultTreeWidgetItem(QTreeWidgetItem):
 
 
 class SearchUI(QMainWindow):
+    search_requested = Signal(dict)  # emitted with search_params dict
+    search_cancelled = Signal()
+    result_double_clicked = Signal(dict)  # emitted with serialized result dict
+    open_folder_requested = Signal(str)  # emitted with file_path string
+
     def __init__(self, logger: logging.Logger | None = None):
         super().__init__()
         self.logger = logger or logging.getLogger(__name__)
 
-        # Callbacks
-        self.on_search_start: Callable | None = None
-        self.on_search_cancel: Callable | None = None
-        self.on_result_double_click: Callable | None = None
-        self.on_open_containing_folder: Callable | None = None
-
         self._setup_ui()
+        self._load_settings()
+
+    def _load_settings(self):
+        """Load user settings."""
+        settings = QSettings("SearchScript", "EnhancedFileSearch")
+        last_dir = settings.value("last_directory", "")
+        last_search = settings.value("last_search_term", "")
+        if isinstance(last_dir, str):
+            self.dir_entry.setText(last_dir)
+        if isinstance(last_search, str):
+            self.search_entry.setText(last_search)
+
+    def closeEvent(self, event):
+        """Save user settings on close."""
+        settings = QSettings("SearchScript", "EnhancedFileSearch")
+        settings.setValue("last_directory", self.dir_entry.text())
+        settings.setValue("last_search_term", self.search_entry.text())
+        super().closeEvent(event)
 
     def _setup_ui(self):
         """Initialize the UI components."""
@@ -290,34 +306,32 @@ class SearchUI(QMainWindow):
         if not self._validate_inputs():
             return
 
-        if self.on_search_start:
-            include_text = self.include_entry.text()
-            exclude_text = self.exclude_entry.text()
-            search_params = {
-                "directory": self.dir_entry.text(),
-                "search_term": self.search_entry.text(),
-                "include_types": [
-                    ext.strip().lower() for ext in include_text.split(",") if ext.strip()
-                ],
-                "exclude_types": [
-                    ext.strip().lower() for ext in exclude_text.split(",") if ext.strip()
-                ],
-                "search_within_files": self.within_checkbox.isChecked(),
-                "search_mode": self.mode_combo.currentText(),
-                "search_backend": self.backend_combo.currentText(),
-                "max_depth": self._parse_optional_int(self.depth_entry.text()),
-                "min_size": self._parse_optional_int(self.min_size_entry.text()),
-                "max_size": self._parse_optional_int(self.max_size_entry.text()),
-                "max_results": self._parse_optional_int(self.max_results_entry.text()),
-                "match_folders": self.match_folders_checkbox.isChecked(),
-                "follow_symlinks": self.follow_symlinks_checkbox.isChecked(),
-            }
-            self.on_search_start(search_params)
+        include_text = self.include_entry.text()
+        exclude_text = self.exclude_entry.text()
+        search_params = {
+            "directory": self.dir_entry.text(),
+            "search_term": self.search_entry.text(),
+            "include_types": [
+                ext.strip().lower() for ext in include_text.split(",") if ext.strip()
+            ],
+            "exclude_types": [
+                ext.strip().lower() for ext in exclude_text.split(",") if ext.strip()
+            ],
+            "search_within_files": self.within_checkbox.isChecked(),
+            "search_mode": self.mode_combo.currentText(),
+            "search_backend": self.backend_combo.currentText(),
+            "max_depth": self._parse_optional_int(self.depth_entry.text()),
+            "min_size": self._parse_optional_int(self.min_size_entry.text()),
+            "max_size": self._parse_optional_int(self.max_size_entry.text()),
+            "max_results": self._parse_optional_int(self.max_results_entry.text()),
+            "match_folders": self.match_folders_checkbox.isChecked(),
+            "follow_symlinks": self.follow_symlinks_checkbox.isChecked(),
+        }
+        self.search_requested.emit(search_params)
 
     def _on_cancel_clicked(self):
         """Handle cancel button click."""
-        if self.on_search_cancel:
-            self.on_search_cancel()
+        self.search_cancelled.emit()
 
     def _validate_inputs(self) -> bool:
         """Validate user inputs."""
@@ -380,9 +394,9 @@ class SearchUI(QMainWindow):
 
     def _on_result_double_click(self, item: QTreeWidgetItem, column: int):
         """Handle result double-click."""
-        if self.on_result_double_click:
-            result = item.data(0, RESULT_ROLE)
-            self.on_result_double_click(result or item.text(0))
+        result = item.data(0, RESULT_ROLE)
+        if result is not None:
+            self.result_double_clicked.emit(result)
 
     def _show_context_menu(self, pos):
         """Show context menu on right-click."""
@@ -396,12 +410,11 @@ class SearchUI(QMainWindow):
 
     def _on_open_containing_folder(self):
         """Handle open containing folder menu item."""
-        if self.on_open_containing_folder:
-            item = self.results_tree.currentItem()
-            if item:
-                result = item.data(0, RESULT_ROLE) or {}
-                file_path = result.get("file_path", item.text(0))
-                self.on_open_containing_folder(file_path)
+        item = self.results_tree.currentItem()
+        if item:
+            result = item.data(0, RESULT_ROLE) or {}
+            file_path = result.get("file_path", item.text(0))
+            self.open_folder_requested.emit(file_path)
 
     def _apply_preset(self, preset: str):
         """Apply a file type preset."""
@@ -520,43 +533,47 @@ class SearchUI(QMainWindow):
                 if metadata:
                     rows.append(metadata)
 
-        if file_path.endswith(".json"):
-            with open(file_path, "w") as f:
-                json.dump(rows, f, indent=2)
-        elif file_path.endswith(".csv"):
-            with open(file_path, "w", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(
-                    [
-                        "File Path",
-                        "Line Number",
-                        "Matching Line",
-                        "Next Line",
-                        "Size Bytes",
-                        "Last Modified",
-                        "Match Score",
-                    ]
-                )
-                for row in rows:
+        try:
+            if file_path.endswith(".json"):
+                with open(file_path, "w") as f:
+                    json.dump(rows, f, indent=2)
+            elif file_path.endswith(".csv"):
+                with open(file_path, "w", newline="") as f:
+                    writer = csv.writer(f)
                     writer.writerow(
                         [
-                            row["file_path"],
-                            row["line_number"],
-                            row["line_content"],
-                            row["next_line"],
-                            row["file_size"],
-                            row["formatted_mod_time"],
-                            row["match_score"],
+                            "File Path",
+                            "Line Number",
+                            "Matching Line",
+                            "Next Line",
+                            "Size Bytes",
+                            "Last Modified",
+                            "Match Score",
                         ]
                     )
-        else:
-            with open(file_path, "w") as f:
-                for row in rows:
-                    f.write(
-                        f"{row['file_path']}\t{row['line_number'] or ''}\t"
-                        f"{row['line_content'] or ''}\t{row['formatted_size']}\t"
-                        f"{row['formatted_mod_time']}\n"
-                    )
+                    for row in rows:
+                        writer.writerow(
+                            [
+                                row["file_path"],
+                                row["line_number"],
+                                row["line_content"],
+                                row["next_line"],
+                                row["file_size"],
+                                row["formatted_mod_time"],
+                                row["match_score"],
+                            ]
+                        )
+            else:
+                with open(file_path, "w") as f:
+                    for row in rows:
+                        f.write(
+                            f"{row['file_path']}\t{row['line_number'] or ''}\t"
+                            f"{row['line_content'] or ''}\t{row['formatted_size']}\t"
+                            f"{row['formatted_mod_time']}\n"
+                        )
+        except OSError as e:
+            QMessageBox.critical(self, "Export Failed", f"Could not write to {file_path}:\n{e}")
+            return
 
         QMessageBox.information(self, "Export", f"Exported {len(rows)} results to {file_path}")
 

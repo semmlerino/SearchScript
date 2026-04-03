@@ -6,6 +6,12 @@ from typing import Any
 
 from PySide6.QtCore import QTimer
 
+from .constants import (
+    PROCESS_RESULTS_TIME_BUDGET_S,
+    RESULT_BATCH_SIZE,
+    RESULT_POLL_BACKOFF_DELAY_MS,
+    RESULT_POLL_INITIAL_DELAY_MS,
+)
 from .file_utils import FileOperations, LoggingConfig
 from .search_engine import SearchBackend, SearchEngine, SearchMode, SearchResult
 from .ui_components import SearchUI
@@ -13,9 +19,6 @@ from .ui_components import SearchUI
 
 class SearchController:
     """Main controller coordinating UI and search operations."""
-
-    RESULT_BATCH_SIZE = 100
-    PROCESS_RESULTS_TIME_BUDGET_S = 0.025
 
     def __init__(self):
         self.logger = LoggingConfig.setup_logging()
@@ -38,11 +41,11 @@ class SearchController:
         self.logger.info("SearchController initialized")
 
     def _setup_callbacks(self):
-        """Setup UI event callbacks."""
-        self.ui.on_search_start = self._start_search
-        self.ui.on_search_cancel = self._cancel_search
-        self.ui.on_result_double_click = self._open_file
-        self.ui.on_open_containing_folder = self._open_containing_folder
+        """Connect UI signals to controller slots."""
+        self.ui.search_requested.connect(self._start_search)
+        self.ui.search_cancelled.connect(self._cancel_search)
+        self.ui.result_double_clicked.connect(self._open_file)
+        self.ui.open_folder_requested.connect(self._open_containing_folder)
         self.ui.clear_dates_btn.clicked.connect(self._clear_dates)
 
     def _clear_dates(self) -> None:
@@ -110,7 +113,7 @@ class SearchController:
         self.search_thread.start()
 
         # Start monitoring results
-        QTimer.singleShot(100, self._process_results)
+        QTimer.singleShot(RESULT_POLL_INITIAL_DELAY_MS, self._process_results)
 
     def _search_worker(self, search_params: dict[str, Any]):
         """Worker thread for search operations."""
@@ -119,11 +122,10 @@ class SearchController:
             batch: list[SearchResult] = []
 
             def progress_callback(message: str):
-                limit_prefix = self.search_engine.LIMIT_REACHED_PREFIX
-                if message.startswith(limit_prefix):
-                    self.result_queue.put(("limit_reached", int(message[len(limit_prefix) :])))
-                    return
                 self.result_queue.put(("status", message))
+
+            def on_limit_reached(limit: int) -> None:
+                self.result_queue.put(("limit_reached", limit))
 
             def flush_batch() -> None:
                 nonlocal batch
@@ -153,6 +155,7 @@ class SearchController:
                 match_folders=search_params.get("match_folders", False),
                 follow_symlinks=search_params.get("follow_symlinks", False),
                 progress_callback=progress_callback,
+                on_limit_reached=on_limit_reached,
                 cancel_event=self.cancel_event,
             ):
                 if self.cancel_event.is_set():
@@ -162,7 +165,7 @@ class SearchController:
                     return
                 batch.append(result)
                 count += 1
-                if len(batch) >= self.RESULT_BATCH_SIZE:
+                if len(batch) >= RESULT_BATCH_SIZE:
                     flush_batch()
 
             flush_batch()
@@ -178,7 +181,7 @@ class SearchController:
         batch: list[SearchResult] = []
         started_at = monotonic()
         try:
-            while monotonic() - started_at < self.PROCESS_RESULTS_TIME_BUDGET_S:
+            while monotonic() - started_at < PROCESS_RESULTS_TIME_BUDGET_S:
                 msg_type, data = self.result_queue.get_nowait()
 
                 if msg_type == "result":
@@ -214,7 +217,7 @@ class SearchController:
             self.ui.add_results_batch(batch)
 
         if self.search_thread and self.search_thread.is_alive():
-            delay_ms = 0 if not self.result_queue.empty() else 50
+            delay_ms = 0 if not self.result_queue.empty() else RESULT_POLL_BACKOFF_DELAY_MS
             QTimer.singleShot(delay_ms, self._process_results)
         else:
             sentinel = self._drain_remaining_results()
@@ -294,10 +297,10 @@ class SearchController:
         self.ui.update_status("Search cancellation requested.")
         self.logger.info("Search cancellation requested")
 
-    def _open_file(self, result: dict[str, Any] | str):
+    def _open_file(self, result: dict[str, Any]):
         """Open a file from the results."""
-        file_path = result if isinstance(result, str) else str(result.get("file_path", ""))
-        line_number = None if isinstance(result, str) else result.get("line_number")
+        file_path = str(result.get("file_path", ""))
+        line_number = result.get("line_number")
         if not self.file_ops.open_file(file_path, line_number=line_number):
             self.ui.show_error_message("Error", f"Cannot open file: {file_path}")
 

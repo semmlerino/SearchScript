@@ -10,7 +10,7 @@ import subprocess
 import threading
 import types
 from base64 import b64decode
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -26,6 +26,19 @@ except ImportError:
     RAPIDFUZZ_AVAILABLE = False
 
 from .config import DirectoryError, FileAccessError, SearchError, ValidationError
+from .constants import (
+    FUZZY_EXACT_BONUS,
+    FUZZY_FULL_THRESHOLD,
+    FUZZY_PARTIAL_THRESHOLD,
+    FUZZY_WORD_BONUS,
+    INVENTORY_CACHE_MAX_ENTRIES,
+    INVENTORY_CACHE_TTL_S,
+    INVENTORY_PROGRESS_MILESTONE,
+    LARGE_FILE_MMAP_THRESHOLD,
+    LINE_CONTENT_MAX_CHARS,
+    PERSISTENT_INDEX_MAX_AGE_S,
+    RIPGREP_PROGRESS_MILESTONE,
+)
 from .search_index import (
     InventoryCacheKey,
     InventoryEntry,
@@ -90,10 +103,6 @@ class MatchPlan:
 
 
 class SearchEngine:
-    INVENTORY_CACHE_TTL_S = 10.0
-    PERSISTENT_INDEX_MAX_AGE_S = 6 * 60 * 60
-    INVENTORY_CACHE_MAX_ENTRIES = 6
-    LIMIT_REACHED_PREFIX = "__limit_reached__:"
     BACKGROUND_REFRESH_STATUS = "Using cached file inventory while refreshing index in background"
 
     def __init__(
@@ -200,6 +209,7 @@ class SearchEngine:
         follow_symlinks: bool = False,
         progress_callback=None,
         cancel_event=None,
+        on_limit_reached: Callable[[int], None] | None = None,
     ) -> Generator[SearchResult, None, None]:
         """
         Search for files/content matching criteria.
@@ -249,6 +259,7 @@ class SearchEngine:
                 follow_symlinks=follow_symlinks,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
+                on_limit_reached=on_limit_reached,
             )
             return
 
@@ -291,7 +302,8 @@ class SearchEngine:
                         yield result
                         emitted_results += 1
                         if max_results is not None and emitted_results >= max_results:
-                            self._notify_limit_reached(progress_callback, max_results)
+                            if on_limit_reached:
+                                on_limit_reached(max_results)
                             return
 
             for entry in inventory.files:
@@ -329,7 +341,8 @@ class SearchEngine:
                             yield result
                             emitted_results += 1
                             if max_results is not None and emitted_results >= max_results:
-                                self._notify_limit_reached(progress_callback, max_results)
+                                if on_limit_reached:
+                                    on_limit_reached(max_results)
                                 return
                     else:
                         score = self._score_match(
@@ -350,7 +363,8 @@ class SearchEngine:
                                 yield result
                                 emitted_results += 1
                                 if max_results is not None and emitted_results >= max_results:
-                                    self._notify_limit_reached(progress_callback, max_results)
+                                    if on_limit_reached:
+                                        on_limit_reached(max_results)
                                     return
                 except FileAccessError as e:
                     self.logger.warning(f"Skipping file due to access error: {e}")
@@ -368,7 +382,7 @@ class SearchEngine:
         except FileNotFoundError as e:
             raise DirectoryError(f"Directory not found: {directory}") from e
         except Exception as e:
-            self.logger.error(f"Unexpected error during search: {e}")
+            self.logger.exception("Unexpected error during search")
             raise SearchError(f"Search operation failed: {e!s}") from e
 
         if deferred_results:
@@ -380,7 +394,8 @@ class SearchEngine:
                 for result in deferred_results[:max_results]:
                     yield result
                     emitted_results += 1
-                self._notify_limit_reached(progress_callback, max_results)
+                if on_limit_reached:
+                    on_limit_reached(max_results)
                 return
             for result in deferred_results:
                 yield result
@@ -444,7 +459,7 @@ class SearchEngine:
         load_result = self._index_store.load_snapshot(
             cache_key,
             root_mtime_ns=root_mtime_ns,
-            max_age_s=self.PERSISTENT_INDEX_MAX_AGE_S,
+            max_age_s=PERSISTENT_INDEX_MAX_AGE_S,
             allow_stale=True,
         )
         if load_result is not None:
@@ -498,7 +513,7 @@ class SearchEngine:
         root_mtime_ns: int | None,
     ) -> bool:
         """Check whether a cached snapshot can be reused safely enough."""
-        if time() - snapshot.created_at > self.INVENTORY_CACHE_TTL_S:
+        if time() - snapshot.created_at > INVENTORY_CACHE_TTL_S:
             return False
         return snapshot.root_mtime_ns == root_mtime_ns
 
@@ -510,7 +525,7 @@ class SearchEngine:
         """Persist an inventory snapshot and update the hot in-memory cache."""
         with self._inventory_cache_lock:
             self._inventory_cache[cache_key] = snapshot
-            if len(self._inventory_cache) > self.INVENTORY_CACHE_MAX_ENTRIES:
+            if len(self._inventory_cache) > INVENTORY_CACHE_MAX_ENTRIES:
                 oldest_key = min(
                     self._inventory_cache,
                     key=lambda key: self._inventory_cache[key].created_at,
@@ -617,10 +632,8 @@ class SearchEngine:
                 )
             )
             files_indexed += 1
-            if progress_callback and files_indexed % 250 == 0:
-                progress_callback(
-                    f"Indexed {files_indexed} files in {directory}"
-                )
+            if progress_callback and files_indexed % INVENTORY_PROGRESS_MILESTONE == 0:
+                progress_callback(f"Indexed {files_indexed} files in {directory}")
 
         return InventorySnapshot(
             files=files,
@@ -775,18 +788,18 @@ class SearchEngine:
                 fuzz.partial_ratio(normalized_term, normalized_text)  # pyright: ignore[reportPossiblyUnboundVariable]
             )
             score = max(score, partial * 0.9)
-            threshold = 78.0
+            threshold = FUZZY_PARTIAL_THRESHOLD
         else:
             simple = float(fuzz.ratio(normalized_term, normalized_text))  # pyright: ignore[reportPossiblyUnboundVariable]
             partial = float(
                 fuzz.partial_ratio(normalized_term, normalized_text)  # pyright: ignore[reportPossiblyUnboundVariable]
             )
             score = max(score, simple, partial * 0.85)
-            threshold = 80.0
+            threshold = FUZZY_FULL_THRESHOLD
             if normalized_text.startswith(normalized_term):
-                score += 4.0
+                score += FUZZY_EXACT_BONUS
             elif normalized_term in normalized_text:
-                score += 2.0
+                score += FUZZY_WORD_BONUS
 
         return score if score >= threshold else None
 
@@ -870,14 +883,10 @@ class SearchEngine:
         """Search within file content for the search term using optimized methods."""
         if file_size == 0:
             return
-        if file_size > 1024 * 1024:
-            yield from self._search_large_file(
-                file_path, match_plan, file_size=file_size
-            )
+        if file_size > LARGE_FILE_MMAP_THRESHOLD:
+            yield from self._search_large_file(file_path, match_plan, file_size=file_size)
         else:
-            yield from self._search_small_file(
-                file_path, match_plan, file_size=file_size
-            )
+            yield from self._search_small_file(file_path, match_plan, file_size=file_size)
 
     def _search_small_file(
         self,
@@ -894,11 +903,11 @@ class SearchEngine:
                 score = self._score_match(line, match_plan, allow_partial_fuzzy=True)
                 if score is not None:
                     line_content = line.strip()
-                    if len(line_content) > 2000:
-                        line_content = line_content[:2000] + "..."
+                    if len(line_content) > LINE_CONTENT_MAX_CHARS:
+                        line_content = line_content[:LINE_CONTENT_MAX_CHARS] + "..."
                     next_line = lines[i + 1].strip() if i + 1 < len(lines) else None
-                    if next_line and len(next_line) > 2000:
-                        next_line = next_line[:2000] + "..."
+                    if next_line and len(next_line) > LINE_CONTENT_MAX_CHARS:
+                        next_line = next_line[:LINE_CONTENT_MAX_CHARS] + "..."
                     yield SearchResult(
                         str(file_path),
                         i + 1,
@@ -911,7 +920,7 @@ class SearchEngine:
             raise FileAccessError(f"Permission denied reading file: {file_path}") from e
         except UnicodeDecodeError:
             self.logger.debug(f"Skipping binary file: {file_path}")
-        except Exception as e:
+        except OSError as e:
             raise FileAccessError(f"Error reading file {file_path}: {e}") from e
 
     def _search_file_content_with_ripgrep(
@@ -929,6 +938,7 @@ class SearchEngine:
         follow_symlinks: bool,
         progress_callback=None,
         cancel_event: threading.Event | None = None,
+        on_limit_reached: Callable[[int], None] | None = None,
     ) -> Generator[SearchResult, None, None]:
         """Search file contents with ripgrep and filter matches using the app's metadata rules."""
         if self._rg_path is None:
@@ -981,6 +991,7 @@ class SearchEngine:
                 follow_symlinks=follow_symlinks,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
+                on_limit_reached=on_limit_reached,
             )
             return
 
@@ -1018,6 +1029,7 @@ class SearchEngine:
                 try:
                     payload = json.loads(raw_line)
                 except json.JSONDecodeError:
+                    self.logger.debug("Skipping non-JSON ripgrep output line: %r", raw_line)
                     continue
 
                 if payload.get("type") != "match":
@@ -1040,11 +1052,11 @@ class SearchEngine:
                     continue
 
                 line_text = self._decode_ripgrep_text(data["lines"]).rstrip("\n").rstrip("\r")
-                if len(line_text) > 2000:
-                    line_text = line_text[:2000] + "..."
+                if len(line_text) > LINE_CONTENT_MAX_CHARS:
+                    line_text = line_text[:LINE_CONTENT_MAX_CHARS] + "..."
 
                 matches += 1
-                if progress_callback and matches % 1000 == 0:
+                if progress_callback and matches % RIPGREP_PROGRESS_MILESTONE == 0:
                     progress_callback(f"ripgrep matched {matches} lines in {directory}")
 
                 yield SearchResult(
@@ -1056,7 +1068,8 @@ class SearchEngine:
                 )
                 emitted_results += 1
                 if max_results is not None and emitted_results >= max_results:
-                    self._notify_limit_reached(progress_callback, max_results)
+                    if on_limit_reached:
+                        on_limit_reached(max_results)
                     return
 
             return_code = process.wait()
@@ -1204,8 +1217,8 @@ class SearchEngine:
                             )
                             if score is not None:
                                 line_content = line_text.strip()
-                                if len(line_content) > 2000:
-                                    line_content = line_content[:2000] + "..."
+                                if len(line_content) > LINE_CONTENT_MAX_CHARS:
+                                    line_content = line_content[:LINE_CONTENT_MAX_CHARS] + "..."
                                 # Peek at next line for context_after
                                 next_line: str | None = None
                                 if eol != -1:
@@ -1218,8 +1231,8 @@ class SearchEngine:
                                         .strip()
                                     )
                                     if raw_next:
-                                        if len(raw_next) > 2000:
-                                            raw_next = raw_next[:2000] + "..."
+                                        if len(raw_next) > LINE_CONTENT_MAX_CHARS:
+                                            raw_next = raw_next[:LINE_CONTENT_MAX_CHARS] + "..."
                                         next_line = raw_next
                                 yield SearchResult(
                                     str(file_path),
@@ -1233,15 +1246,13 @@ class SearchEngine:
 
                 except (OSError, ValueError):
                     # Fallback to regular file reading if mmap fails
-                    yield from self._search_small_file(
-                        file_path, match_plan, file_size=file_size
-                    )
+                    yield from self._search_small_file(file_path, match_plan, file_size=file_size)
 
         except PermissionError as e:
             raise FileAccessError(f"Permission denied reading file: {file_path}") from e
         except UnicodeDecodeError:
             self.logger.debug(f"Skipping binary file: {file_path}")
-        except Exception as e:
+        except OSError as e:
             raise FileAccessError(f"Error reading file {file_path}: {e}") from e
 
     def _update_progress(self, files_processed: int, current_dir: str, progress_callback):
@@ -1257,14 +1268,7 @@ class SearchEngine:
     ) -> None:
         """Update progress while iterating an already-built inventory."""
         if progress_callback and files_processed % 100 == 0:
-            progress_callback(
-                f"Searching cached inventory: {files_processed}/{total_files} files"
-            )
-
-    def _notify_limit_reached(self, progress_callback, max_results: int) -> None:
-        """Emit a structured limit notification through the shared callback channel."""
-        if progress_callback:
-            progress_callback(f"{self.LIMIT_REACHED_PREFIX}{max_results}")
+            progress_callback(f"Searching cached inventory: {files_processed}/{total_files} files")
 
     def _walk_scandir(
         self,
