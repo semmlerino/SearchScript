@@ -610,6 +610,12 @@ class SearchEngine:
             return SearchBackend.PYTHON
         if requested_backend == SearchBackend.PYTHON:
             return SearchBackend.PYTHON
+        if requested_backend == SearchBackend.RIPGREP:
+            # Honor explicit ripgrep request (if available)
+            return SearchBackend.RIPGREP if self._rg_path else SearchBackend.PYTHON
+        # AUTO: inventory cache for filenames, ripgrep for content
+        if not search_within_files:
+            return SearchBackend.PYTHON
         if self._rg_path is None:
             return SearchBackend.PYTHON
         return SearchBackend.RIPGREP
