@@ -18,7 +18,7 @@ from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import QApplication, QWidget
 
 from search_script.config import ValidationError
-from search_script.file_utils import FileOperations
+from search_script.file_utils import FileOperations, is_nfs_path
 from search_script.inventory import InventoryManager
 from search_script.models import SearchBackend, SearchMode, SearchResult
 from search_script.search_controller import SearchController
@@ -1913,3 +1913,51 @@ def test_parallel_walk_symlink_cycle_safe(tmp_path: Path) -> None:
 
     # Should complete without hanging and find the real file
     assert str(b_dir / "real_file.txt") in result_paths
+
+
+def test_is_nfs_path_detection(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """is_nfs_path should detect NFS mounts from /proc/self/mountinfo."""
+    from search_script import file_utils
+
+    # Clear lru_cache from previous calls
+    file_utils._parse_nfs_mount_points.cache_clear()
+
+    fake_mountinfo = (
+        "25 1 8:1 / / rw - ext4 /dev/sda1 rw\n"
+        f"30 1 0:40 / {tmp_path} rw - nfs4 server:/export rw\n"
+    )
+    monkeypatch.setattr(
+        "builtins.open",
+        lambda path, *a, **kw: __import__("io").StringIO(fake_mountinfo)
+        if path == "/proc/self/mountinfo"
+        else open(path, *a, **kw),  # noqa: SIM115
+    )
+    file_utils._parse_nfs_mount_points.cache_clear()
+
+    assert is_nfs_path(str(tmp_path / "subdir" / "file.txt"))
+    assert not is_nfs_path("/usr/local/bin")
+
+    # Cleanup: clear cache so other tests aren't affected
+    file_utils._parse_nfs_mount_points.cache_clear()
+
+
+def test_nfs_path_skips_mmap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """On NFS paths, large files should use _search_small_file instead of _search_large_file."""
+    monkeypatch.setattr("search_script.search_engine.is_nfs_path", lambda _path: True)
+
+    big_file = tmp_path / "large.txt"
+    # Create a file larger than LARGE_FILE_MMAP_THRESHOLD (1MB)
+    content = "findme in this large file\n" * 50000
+    big_file.write_text(content)
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "findme",
+            search_within_files=True,
+            search_backend=SearchBackend.PYTHON,
+        )
+    )
+    assert len(results) > 0
+    assert all("large.txt" in r.file_path for r in results)

@@ -28,6 +28,7 @@ from .constants import (
     FUZZY_WORD_BONUS,
     LARGE_FILE_MMAP_THRESHOLD,
 )
+from .file_utils import is_nfs_path
 from .inventory import InventoryManager
 from .models import (
     RAPIDFUZZ_AVAILABLE,
@@ -699,7 +700,7 @@ class SearchEngine:
         """Search within file content for the search term using optimized methods."""
         if file_size == 0:
             return
-        if file_size > LARGE_FILE_MMAP_THRESHOLD:
+        if file_size > LARGE_FILE_MMAP_THRESHOLD and not is_nfs_path(str(file_path)):
             yield from self._search_large_file(
                 file_path,
                 match_plan,

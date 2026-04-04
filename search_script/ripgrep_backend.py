@@ -12,6 +12,7 @@ from queue import Empty, Queue
 
 from .config import SearchError
 from .constants import RIPGREP_PROGRESS_MILESTONE
+from .file_utils import is_nfs_path
 from .models import (
     MatchPlan,
     SearchMode,
@@ -271,6 +272,8 @@ class RipgrepBackend:
             command.extend(["-g", f"!*{ext}"])
         if exclude_shots:
             command.extend(["-g", "!shots/"])
+        if is_nfs_path(directory):
+            command.append("--no-mmap")
         command.append(directory)
         return command
 
@@ -486,6 +489,8 @@ class RipgrepBackend:
             command.extend(["-g", f"!*{ext}"])
         if exclude_shots:
             command.extend(["-g", "!shots/"])
+        if is_nfs_path(directory):
+            command.append("--no-mmap")
 
         pattern = match_plan.raw_term
         if match_plan.mode == SearchMode.SUBSTRING:

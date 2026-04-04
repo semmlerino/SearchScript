@@ -1,9 +1,37 @@
+import functools
 import logging
 import os
 import shutil
 import subprocess
 import sys
 from datetime import datetime
+
+
+@functools.lru_cache(maxsize=1)
+def _parse_nfs_mount_points() -> frozenset[str]:
+    """Parse /proc/self/mountinfo for NFS mount points. Cached for process lifetime."""
+    nfs_types = {"nfs", "nfs3", "nfs4"}
+    mount_points: set[str] = set()
+    try:
+        with open("/proc/self/mountinfo") as f:
+            for line in f:
+                parts = line.split()
+                sep_idx = parts.index("-")
+                fstype = parts[sep_idx + 1]
+                if fstype in nfs_types:
+                    mount_points.add(parts[4])  # mount point
+    except (OSError, ValueError, IndexError):
+        pass
+    return frozenset(mount_points)
+
+
+def is_nfs_path(path: str) -> bool:
+    """Check if path resides on an NFS filesystem."""
+    mps = _parse_nfs_mount_points()
+    if not mps:
+        return False
+    resolved = os.path.realpath(path)
+    return any(resolved == mp or resolved.startswith(mp + "/") for mp in mps)
 
 
 class FileOperations:
