@@ -1,13 +1,13 @@
 {
-  "timestamp": "2026-04-04T14:43:13.211802+00:00",
+  "timestamp": "2026-04-04T17:59:57.132153+00:00",
   "folder_name": "search_script_bundle_temp",
   "folder_path": "/tmp/search_script_bundle_temp",
-  "original_size_bytes": 143963,
-  "encoded_size_bytes": 41232,
+  "original_size_bytes": 152494,
+  "encoded_size_bytes": 42224,
   "chunk_size_kb": 5120,
   "total_chunks": 1,
-  "compression_ratio": 3.491535700426853,
-  "source_commit": "ae4c299ce012cc70b2bd0ecf63758ec05e13a645",
+  "compression_ratio": 3.611547934823797,
+  "source_commit": "deb6e2f79247a30db9a583851909d9b9cc719197",
   "source_branch": "main",
-  "bundle_timestamp": "2026-04-04T14:43:13.440105+00:00"
+  "bundle_timestamp": "2026-04-04T17:59:57.519892+00:00"
 }
