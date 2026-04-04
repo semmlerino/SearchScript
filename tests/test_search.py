@@ -477,7 +477,7 @@ def test_ripgrep_backend_falls_back_to_python_when_unavailable(tmp_path: Path):
     test_file.write_text("needle")
 
     engine = SearchEngine()
-    engine._rg_path = None  # pyright: ignore[reportPrivateUsage]
+    engine._ripgrep._rg_path = None  # pyright: ignore[reportPrivateUsage]
     results = list(
         engine.search_files(
             str(tmp_path),

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
+from .constants import LINE_CONTENT_MAX_CHARS
+
 _rapidfuzz_ok: bool = _importlib_util.find_spec("rapidfuzz") is not None
 
 RAPIDFUZZ_AVAILABLE: bool = _rapidfuzz_ok
@@ -125,3 +127,28 @@ class LimitReachedMsg:
 
 
 SearchMessage = ResultBatchMsg | DoneMsg | ErrorMsg | CancelledMsg | StatusMsg | LimitReachedMsg
+
+
+def check_file_filters(
+    file_size: int,
+    mod_time: float,
+    *,
+    min_size: int | None,
+    max_size: int | None,
+    modified_after_ts: float | None,
+    modified_before_ts: float | None,
+) -> bool:
+    """Return True if metadata passes all size/date filters."""
+    if min_size is not None and file_size < min_size:
+        return False
+    if max_size is not None and file_size > max_size:
+        return False
+    if modified_after_ts is not None and mod_time < modified_after_ts:
+        return False
+    return modified_before_ts is None or mod_time <= modified_before_ts
+
+
+def truncate_line(text: str) -> str:
+    if len(text) > LINE_CONTENT_MAX_CHARS:
+        return text[:LINE_CONTENT_MAX_CHARS] + "..."
+    return text
