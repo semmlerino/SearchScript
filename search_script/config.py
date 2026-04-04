@@ -1,7 +1,6 @@
 """Exception hierarchy for the search application."""
 
 
-# Error handling classes
 class SearchError(Exception):
     """Base exception for search operations."""
 

@@ -478,13 +478,10 @@ class SearchEngine:
             if max_results is not None and len(deferred_results) > max_results:
                 for result in deferred_results[:max_results]:
                     yield result
-                    emitted_results += 1
                 if on_limit_reached:
                     on_limit_reached(max_results)
                 return
-            for result in deferred_results:
-                yield result
-                emitted_results += 1
+            yield from deferred_results
 
     def _validate_search_params(self, directory: str, search_term: str):
         """Validate search parameters."""
@@ -824,8 +821,7 @@ class SearchEngine:
                 return (100.0, idx, len(match_plan.normalized_term))
             return None
         if match_plan.mode == SearchMode.GLOB:
-            has_glob_chars = any(c in match_plan.raw_term for c in "*?[]")
-            pattern = match_plan.raw_term if has_glob_chars else f"*{match_plan.raw_term}*"
+            pattern = self._ensure_glob_wildcard(match_plan.raw_term)
             if fnmatch.fnmatch(text.lower(), pattern.lower()):
                 return (100.0, 0, len(text))
             return None
@@ -844,18 +840,6 @@ class SearchEngine:
             return None
         return None
 
-    def _matches_term(
-        self, text: str, match_plan: MatchPlan, *, allow_partial_fuzzy: bool = True
-    ) -> bool:
-        """Return True when the text matches the compiled plan."""
-        return (
-            self._score_match(
-                text,
-                match_plan,
-                allow_partial_fuzzy=allow_partial_fuzzy,
-            )
-            is not None
-        )
 
     def _score_fuzzy_match(
         self, text: str, normalized_term: str, *, allow_partial_fuzzy: bool
@@ -890,23 +874,6 @@ class SearchEngine:
 
         return score if score >= threshold else None
 
-    def _check_file_filters_with_stat(
-        self,
-        stat_result: os.stat_result,
-        min_size: int | None,
-        max_size: int | None,
-        modified_after_ts: float | None,
-        modified_before_ts: float | None,
-    ) -> bool:
-        """Return True if the file passes all size/date filters (using pre-fetched stat)."""
-        return self._check_file_filters(
-            stat_result.st_size,
-            stat_result.st_mtime,
-            min_size=min_size,
-            max_size=max_size,
-            modified_after_ts=modified_after_ts,
-            modified_before_ts=modified_before_ts,
-        )
 
     def _check_file_filters(
         self,
@@ -927,6 +894,17 @@ class SearchEngine:
             return False
         return modified_before_ts is None or mod_time <= modified_before_ts
 
+    @staticmethod
+    def _truncate_line(text: str) -> str:
+        if len(text) > LINE_CONTENT_MAX_CHARS:
+            return text[:LINE_CONTENT_MAX_CHARS] + "..."
+        return text
+
+    @staticmethod
+    def _ensure_glob_wildcard(term: str) -> str:
+        """Wrap term in wildcards if it contains no explicit glob characters."""
+        return term if any(c in term for c in "*?[]") else f"*{term}*"
+
     def _detect_bom(self, file_path: Path) -> str | None:
         """Read up to 4 bytes and return the encoding if a BOM is present, else None."""
         try:
@@ -942,46 +920,6 @@ class SearchEngine:
             return None
         return None
 
-    def _detect_encoding(self, file_path: Path) -> str:
-        """Detect file encoding using chardet if available, otherwise fall back to utf-8."""
-        try:
-            with open(file_path, "rb") as f:
-                raw = f.read(4096)
-
-            if raw.startswith(codecs.BOM_UTF8):
-                return "utf-8-sig"
-            if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
-                return "utf-16"
-            if raw.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
-                return "utf-32"
-
-            if self._chardet is not None:
-                detected = self._chardet.detect(raw)
-                if detected and detected.get("confidence", 0) > 0.5:
-                    return detected["encoding"] or "utf-8"
-
-            if raw:
-                even_nulls = raw[::2].count(0)
-                odd_nulls = raw[1::2].count(0)
-                if even_nulls > len(raw[::2]) // 4 or odd_nulls > len(raw[1::2]) // 4:
-                    return "utf-16"
-
-            def _try_decode(enc: str) -> bool:
-                try:
-                    raw.decode(enc)
-                    return True
-                except UnicodeDecodeError:
-                    return False
-
-            matched = next(
-                (enc for enc in ("utf-8", "utf-8-sig", "utf-16") if _try_decode(enc)),
-                None,
-            )
-            if matched is not None:
-                return matched
-        except Exception:
-            pass
-        return "utf-8"
 
     def _search_file_content(
         self,
@@ -1018,12 +956,10 @@ class SearchEngine:
                 result_tuple = self._score_match(line, match_plan, allow_partial_fuzzy=True)
                 if result_tuple is not None:
                     score, raw_match_start, match_length = result_tuple
-                    line_content = line.strip()
-                    if len(line_content) > LINE_CONTENT_MAX_CHARS:
-                        line_content = line_content[:LINE_CONTENT_MAX_CHARS] + "..."
+                    line_content = self._truncate_line(line.strip())
                     next_line = lines[i + 1].strip() if i + 1 < len(lines) else None
-                    if next_line and len(next_line) > LINE_CONTENT_MAX_CHARS:
-                        next_line = next_line[:LINE_CONTENT_MAX_CHARS] + "..."
+                    if next_line:
+                        next_line = self._truncate_line(next_line)
 
                     # Adjust match_start for stripped leading whitespace
                     strip_offset = len(line) - len(line.lstrip())
@@ -1038,8 +974,7 @@ class SearchEngine:
                         ctx_after = [ln.strip() for ln in lines[i + 1 : after_end]]
                         for lst in (ctx_before, ctx_after):
                             for idx, line_text in enumerate(lst):
-                                if len(line_text) > LINE_CONTENT_MAX_CHARS:
-                                    lst[idx] = line_text[:LINE_CONTENT_MAX_CHARS] + "..."
+                                lst[idx] = self._truncate_line(line_text)
                         # Override next_line with first after-context line when available
                         if ctx_after:
                             next_line = ctx_after[0]
@@ -1182,8 +1117,7 @@ class SearchEngine:
                 if msg_type == "context":
                     ctx_data = payload.get("data", {})
                     ctx_text = self._decode_ripgrep_text(ctx_data.get("lines", {})).strip()
-                    if ctx_text and len(ctx_text) > LINE_CONTENT_MAX_CHARS:
-                        ctx_text = ctx_text[:LINE_CONTENT_MAX_CHARS] + "..."
+                    ctx_text = self._truncate_line(ctx_text)
                     pending_context.append(ctx_text)
                     continue
                 if msg_type != "match":
@@ -1201,15 +1135,19 @@ class SearchEngine:
                         continue
                     stat_cache[cache_key] = stat_result
 
-                if not self._check_file_filters_with_stat(
-                    stat_result, min_size, max_size, modified_after_ts, modified_before_ts
+                if not self._check_file_filters(
+                    stat_result.st_size,
+                    stat_result.st_mtime,
+                    min_size=min_size,
+                    max_size=max_size,
+                    modified_after_ts=modified_after_ts,
+                    modified_before_ts=modified_before_ts,
                 ):
                     continue
 
                 raw_line_text = self._decode_ripgrep_text(data["lines"]).rstrip("\n").rstrip("\r")
                 stripped_line = raw_line_text.strip()
-                if len(stripped_line) > LINE_CONTENT_MAX_CHARS:
-                    stripped_line = stripped_line[:LINE_CONTENT_MAX_CHARS] + "..."
+                stripped_line = self._truncate_line(stripped_line)
 
                 # Parse submatch positions for highlighting
                 submatches = data.get("submatches", [])
@@ -1252,8 +1190,7 @@ class SearchEngine:
                             peek_text = self._decode_ripgrep_text(
                                 peek_data.get("lines", {})
                             ).strip()
-                            if peek_text and len(peek_text) > LINE_CONTENT_MAX_CHARS:
-                                peek_text = peek_text[:LINE_CONTENT_MAX_CHARS] + "..."
+                            peek_text = self._truncate_line(peek_text)
                             after_lines.append(peek_text)
                         else:
                             putback.append(peek_line)
@@ -1344,7 +1281,7 @@ class SearchEngine:
 
     def _translate_glob_to_regex(self, search_term: str) -> str:
         """Translate the app's line-glob semantics into a ripgrep-compatible regex."""
-        pattern = search_term if any(c in search_term for c in "*?[]") else f"*{search_term}*"
+        pattern = self._ensure_glob_wildcard(search_term)
         translated: list[str] = []
         idx = 0
         while idx < len(pattern):
@@ -1438,9 +1375,7 @@ class SearchEngine:
                             )
                             if result_tuple is not None:
                                 score, raw_match_start, match_length = result_tuple
-                                line_content = line_text.strip()
-                                if len(line_content) > LINE_CONTENT_MAX_CHARS:
-                                    line_content = line_content[:LINE_CONTENT_MAX_CHARS] + "..."
+                                line_content = self._truncate_line(line_text.strip())
                                 # Adjust match_start for stripped leading whitespace
                                 strip_offset = len(line_text) - len(line_text.lstrip())
                                 match_start = max(0, raw_match_start - strip_offset)
@@ -1461,9 +1396,7 @@ class SearchEngine:
                                             .strip()
                                         )
                                         if raw_next:
-                                            if len(raw_next) > LINE_CONTENT_MAX_CHARS:
-                                                raw_next = raw_next[:LINE_CONTENT_MAX_CHARS] + "..."
-                                            after_lines.append(raw_next)
+                                            after_lines.append(self._truncate_line(raw_next))
                                         scan_pos = next_end + 1
                                 next_line = after_lines[0] if after_lines else None
                                 ctx_before: list[str] | None = None
@@ -1499,15 +1432,6 @@ class SearchEngine:
         except OSError as e:
             raise FileAccessError(f"Error reading file {file_path}: {e}") from e
 
-    def _update_progress(
-        self,
-        files_processed: int,
-        current_dir: str,
-        progress_callback: Callable[[str], None] | None,
-    ) -> None:
-        """Update progress if callback provided."""
-        if progress_callback and files_processed % 10 == 0:
-            progress_callback(f"Scanning: {current_dir} ({files_processed} files)")
 
     def _update_cached_inventory_progress(
         self,
@@ -1529,7 +1453,6 @@ class SearchEngine:
         _current_depth: int = 0,
         _seen_realpaths: set[str] | None = None,
         _gitignore_specs: "list[tuple[str, pathspec.PathSpec]] | None" = None,
-        _root_directory: str | None = None,
     ) -> Generator[tuple[str, os.DirEntry[str] | None], None, None]:
         """Walk directory tree using os.scandir for cached d_type (no extra stat on Linux).
 
@@ -1542,9 +1465,6 @@ class SearchEngine:
             return
         if _seen_realpaths is None:
             _seen_realpaths = {os.path.realpath(directory)}
-
-        if _root_directory is None:
-            _root_directory = directory
 
         if not include_ignored:
             gitignore_path = os.path.join(directory, ".gitignore")
@@ -1604,5 +1524,4 @@ class SearchEngine:
                 _current_depth + 1,
                 _seen_realpaths,
                 _gitignore_specs,
-                _root_directory,
             )
