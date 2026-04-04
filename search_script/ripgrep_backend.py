@@ -1,3 +1,4 @@
+import fnmatch
 import json
 import logging
 import os
@@ -234,6 +235,214 @@ class RipgrepBackend:
                 if process.stderr is not None:
                     stderr = process.stderr.read().strip()
                 raise SearchError(stderr or f"ripgrep search failed with exit code {return_code}")
+        finally:
+            self._terminate_process(process)
+
+    def _build_files_command(
+        self,
+        directory: str,
+        include_types: list[str],
+        exclude_types: list[str],
+        max_depth: int | None,
+        follow_symlinks: bool,
+        include_ignored: bool = True,
+        exclude_shots: bool = True,
+    ) -> list[str]:
+        """Build an rg --files command for parallel directory walking."""
+        if self._rg_path is None:
+            raise RipgrepUnavailableError("ripgrep is not available")
+
+        command = [
+            self._rg_path,
+            "--files",
+            "--no-messages",
+            "--threads",
+            str(self.max_workers),
+        ]
+        if include_ignored:
+            command.append("-uu")
+        if follow_symlinks:
+            command.append("-L")
+        if max_depth is not None:
+            command.extend(["--max-depth", str(max_depth)])
+        for ext in include_types:
+            command.extend(["-g", f"*{ext}"])
+        for ext in exclude_types:
+            command.extend(["-g", f"!*{ext}"])
+        if exclude_shots:
+            command.extend(["-g", "!shots/"])
+        command.append(directory)
+        return command
+
+    def search_filenames(
+        self,
+        directory: str,
+        match_plan: MatchPlan,
+        include_types: list[str],
+        exclude_types: list[str],
+        max_depth: int | None,
+        min_size: int | None,
+        max_size: int | None,
+        max_results: int | None,
+        modified_after_ts: float | None,
+        modified_before_ts: float | None,
+        follow_symlinks: bool,
+        include_ignored: bool = True,
+        exclude_shots: bool = True,
+        progress_callback: Callable[[str], None] | None = None,
+        cancel_event: threading.Event | None = None,
+        on_limit_reached: Callable[[int], None] | None = None,
+    ) -> Generator[SearchResult, None, None]:
+        """Search filenames with ripgrep --files for parallel directory walking.
+
+        Uses rg to enumerate files, then matches basenames in Python using
+        the match_plan's mode. Only stats matched files for size/date filters.
+        """
+        if self._rg_path is None:
+            raise RipgrepUnavailableError("ripgrep not found")
+
+        # Pre-compile the matching function based on mode
+        mode = match_plan.mode
+        term = match_plan.normalized_term
+        case_sensitive = match_plan.case_sensitive
+
+        if mode == SearchMode.SUBSTRING:
+            normalized_term = term if case_sensitive else term.lower()
+
+            def _matches(basename: str) -> bool:
+                check = basename if case_sensitive else basename.lower()
+                return normalized_term in check
+
+        elif mode == SearchMode.GLOB:
+            glob_pattern = ensure_glob_wildcard(match_plan.raw_term)
+            if not case_sensitive:
+                glob_pattern_lower = glob_pattern.lower()
+
+                def _matches(basename: str) -> bool:
+                    return fnmatch.fnmatchcase(basename.lower(), glob_pattern_lower)
+
+            else:
+
+                def _matches(basename: str) -> bool:
+                    return fnmatch.fnmatchcase(basename, glob_pattern)
+
+        elif mode == SearchMode.REGEX:
+            if match_plan.regex is None:
+                raise SearchError("REGEX mode requires a compiled regex in match_plan")
+
+            regex = match_plan.regex
+
+            def _matches(basename: str) -> bool:
+                return regex.search(basename) is not None
+
+        else:
+            raise SearchError(f"search_filenames does not support mode: {mode!r}")
+
+        command = self._build_files_command(
+            directory=directory,
+            include_types=include_types,
+            exclude_types=exclude_types,
+            max_depth=max_depth,
+            follow_symlinks=follow_symlinks,
+            include_ignored=include_ignored,
+            exclude_shots=exclude_shots,
+        )
+        if progress_callback:
+            progress_callback(f"Searching filenames with ripgrep: {directory}")
+
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
+        except OSError as e:
+            self.logger.warning(f"ripgrep backend unavailable: {e}")
+            raise RipgrepUnavailableError(str(e)) from e
+
+        assert process.stdout is not None
+        stdout = process.stdout
+        stdout_queue: Queue[str | None] = Queue()
+
+        def _reader() -> None:
+            for raw_line in stdout:
+                stdout_queue.put(raw_line)
+            stdout_queue.put(None)
+
+        threading.Thread(target=_reader, daemon=True).start()
+        emitted_results = 0
+        scanned = 0
+
+        try:
+            while True:
+                if cancel_event and cancel_event.is_set():
+                    self._terminate_process(process)
+                    return
+
+                try:
+                    raw_line = stdout_queue.get(timeout=0.1)
+                except Empty:
+                    if process.poll() is not None:
+                        break
+                    continue
+
+                if raw_line is None:
+                    break
+
+                file_path_str = raw_line.rstrip("\n").rstrip("\r")
+                if not file_path_str:
+                    continue
+
+                basename = os.path.basename(file_path_str)
+                if not _matches(basename):
+                    continue
+
+                # Stat only matched files (not all files)
+                try:
+                    stat_result = Path(file_path_str).stat(follow_symlinks=follow_symlinks)
+                except OSError:
+                    continue
+
+                if not check_file_filters(
+                    stat_result.st_size,
+                    stat_result.st_mtime,
+                    min_size=min_size,
+                    max_size=max_size,
+                    modified_after_ts=modified_after_ts,
+                    modified_before_ts=modified_before_ts,
+                ):
+                    continue
+
+                scanned += 1
+                if progress_callback and scanned % RIPGREP_PROGRESS_MILESTONE == 0:
+                    progress_callback(f"ripgrep matched {scanned} files in {directory}")
+
+                yield SearchResult(
+                    file_path_str,
+                    None,
+                    None,
+                    file_size=stat_result.st_size,
+                    mod_time=stat_result.st_mtime,
+                    match_score=100.0,
+                )
+                emitted_results += 1
+                if max_results is not None and emitted_results >= max_results:
+                    if on_limit_reached:
+                        on_limit_reached(max_results)
+                    return
+
+            return_code = process.wait()
+            if return_code not in (0, 1):
+                stderr = ""
+                if process.stderr is not None:
+                    stderr = process.stderr.read().strip()
+                raise SearchError(
+                    stderr or f"ripgrep filename search failed with exit code {return_code}"
+                )
         finally:
             self._terminate_process(process)
 

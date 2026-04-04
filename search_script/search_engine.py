@@ -211,29 +211,53 @@ class SearchEngine:
 
         backend = self._resolve_search_backend(search_within_files, search_mode, search_backend)
         if backend == SearchBackend.RIPGREP:
-            try:
-                yield from self._ripgrep.search(
-                    directory=directory,
-                    match_plan=match_plan,
-                    include_types=include_types,
-                    exclude_types=exclude_types,
-                    max_depth=max_depth,
-                    min_size=min_size,
-                    max_size=max_size,
-                    max_results=max_results,
-                    modified_after_ts=modified_after_ts,
-                    modified_before_ts=modified_before_ts,
-                    follow_symlinks=follow_symlinks,
-                    include_ignored=include_ignored,
-                    context_lines=context_lines,
-                    exclude_shots=exclude_shots,
-                    progress_callback=progress_callback,
-                    cancel_event=cancel_event,
-                    on_limit_reached=on_limit_reached,
-                )
-                return
-            except RipgrepUnavailableError:
-                self.logger.info("Falling back to Python search backend")
+            if search_within_files:
+                try:
+                    yield from self._ripgrep.search(
+                        directory=directory,
+                        match_plan=match_plan,
+                        include_types=include_types,
+                        exclude_types=exclude_types,
+                        max_depth=max_depth,
+                        min_size=min_size,
+                        max_size=max_size,
+                        max_results=max_results,
+                        modified_after_ts=modified_after_ts,
+                        modified_before_ts=modified_before_ts,
+                        follow_symlinks=follow_symlinks,
+                        include_ignored=include_ignored,
+                        context_lines=context_lines,
+                        exclude_shots=exclude_shots,
+                        progress_callback=progress_callback,
+                        cancel_event=cancel_event,
+                        on_limit_reached=on_limit_reached,
+                    )
+                    return
+                except RipgrepUnavailableError:
+                    self.logger.info("Falling back to Python search backend")
+            elif not match_folders:
+                try:
+                    yield from self._ripgrep.search_filenames(
+                        directory=directory,
+                        match_plan=match_plan,
+                        include_types=include_types,
+                        exclude_types=exclude_types,
+                        max_depth=max_depth,
+                        min_size=min_size,
+                        max_size=max_size,
+                        max_results=max_results,
+                        modified_after_ts=modified_after_ts,
+                        modified_before_ts=modified_before_ts,
+                        follow_symlinks=follow_symlinks,
+                        include_ignored=include_ignored,
+                        exclude_shots=exclude_shots,
+                        progress_callback=progress_callback,
+                        cancel_event=cancel_event,
+                        on_limit_reached=on_limit_reached,
+                    )
+                    return
+                except RipgrepUnavailableError:
+                    self.logger.info("Falling back to Python search backend")
 
         files_processed = 0
         emitted_results = 0
@@ -567,7 +591,7 @@ class SearchEngine:
         requested_backend: SearchBackend,
     ) -> SearchBackend:
         """Select the concrete backend while preserving Python fallback semantics."""
-        if not search_within_files or search_mode == SearchMode.FUZZY:
+        if search_mode == SearchMode.FUZZY:
             return SearchBackend.PYTHON
         if requested_backend == SearchBackend.PYTHON:
             return SearchBackend.PYTHON

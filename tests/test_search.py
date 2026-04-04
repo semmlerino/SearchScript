@@ -262,8 +262,16 @@ def test_search_engine_reuses_inventory_cache(tmp_path: Path, monkeypatch: pytes
 
     monkeypatch.setattr(engine._inventory, "_build_snapshot", wrapped)  # pyright: ignore[reportPrivateUsage]
 
-    list(engine.search_files(str(tmp_path), "file", search_within_files=False))
-    list(engine.search_files(str(tmp_path), "file", search_within_files=False))
+    list(
+        engine.search_files(
+            str(tmp_path), "file", search_within_files=False, search_backend=SearchBackend.PYTHON
+        )
+    )
+    list(
+        engine.search_files(
+            str(tmp_path), "file", search_within_files=False, search_backend=SearchBackend.PYTHON
+        )
+    )
 
     assert build_calls == 1
 
@@ -304,7 +312,11 @@ def test_search_engine_refreshes_stale_persistent_index_in_background(tmp_path: 
 
     # Build and persist an initial inventory.
     first_engine = SearchEngine(index_db_path=index_db)
-    list(first_engine.search_files(str(search_root), "txt", search_within_files=False))
+    list(
+        first_engine.search_files(
+            str(search_root), "txt", search_within_files=False, search_backend=SearchBackend.PYTHON
+        )
+    )
 
     # Age the persisted entry past the TTL so the next load considers it stale.
     from search_script.constants import PERSISTENT_INDEX_MAX_AGE_S
@@ -327,6 +339,7 @@ def test_search_engine_refreshes_stale_persistent_index_in_background(tmp_path: 
             "txt",
             search_within_files=False,
             progress_callback=statuses.append,
+            search_backend=SearchBackend.PYTHON,
         )
     )
 
@@ -342,7 +355,9 @@ def test_search_engine_refreshes_stale_persistent_index_in_background(tmp_path: 
 
     third_engine = SearchEngine(index_db_path=index_db)
     fresh_results = list(
-        third_engine.search_files(str(search_root), "txt", search_within_files=False)
+        third_engine.search_files(
+            str(search_root), "txt", search_within_files=False, search_backend=SearchBackend.PYTHON
+        )
     )
 
     assert len(stale_results) == 1
@@ -498,7 +513,13 @@ def test_symlink_cycle_detection(tmp_path: Path):
     (subdir / "link").symlink_to(tmp_path)
     engine = SearchEngine()
     results = list(
-        engine.search_files(str(tmp_path), "file", search_within_files=False, follow_symlinks=True)
+        engine.search_files(
+            str(tmp_path),
+            "file",
+            search_within_files=False,
+            follow_symlinks=True,
+            search_backend=SearchBackend.PYTHON,
+        )
     )
     assert len(results) == 1
 
@@ -768,7 +789,14 @@ def test_spot_check_extends_ttl_when_unchanged(tmp_path: Path):
 
     engine = SearchEngine(index_db_path=index_db)
     # First search populates cache
-    list(engine.search_files(str(search_root), "file", search_within_files=False))
+    list(
+        engine.search_files(
+            str(search_root),
+            "file",
+            search_within_files=False,
+            search_backend=SearchBackend.PYTHON,
+        )
+    )
 
     # Age the persistent entry past the adaptive TTL ceiling so it's stale
     from search_script.constants import PERSISTENT_INDEX_MAX_AGE_CEILING_S
@@ -792,7 +820,14 @@ def test_spot_check_extends_ttl_when_unchanged(tmp_path: Path):
     engine._inventory._build_snapshot = counting_build  # type: ignore[method-assign]
 
     # Second search — spot-check should pass, no rebuild
-    results = list(engine.search_files(str(search_root), "file", search_within_files=False))
+    results = list(
+        engine.search_files(
+            str(search_root),
+            "file",
+            search_within_files=False,
+            search_backend=SearchBackend.PYTHON,
+        )
+    )
     assert len(results) == 5
     assert build_calls == 0
 
@@ -806,7 +841,14 @@ def test_spot_check_triggers_rescan_on_mtime_change(tmp_path: Path):
     target.write_text("hello", encoding="utf-8")
 
     engine = SearchEngine(index_db_path=index_db)
-    list(engine.search_files(str(search_root), "file", search_within_files=False))
+    list(
+        engine.search_files(
+            str(search_root),
+            "file",
+            search_within_files=False,
+            search_backend=SearchBackend.PYTHON,
+        )
+    )
 
     # Age the persistent entry past ceiling
     from search_script.constants import PERSISTENT_INDEX_MAX_AGE_CEILING_S
@@ -828,6 +870,7 @@ def test_spot_check_triggers_rescan_on_mtime_change(tmp_path: Path):
             "file",
             search_within_files=False,
             progress_callback=statuses.append,
+            search_backend=SearchBackend.PYTHON,
         )
     )
     assert InventoryManager.BACKGROUND_REFRESH_STATUS in statuses
@@ -842,7 +885,14 @@ def test_spot_check_triggers_rescan_on_delete(tmp_path: Path):
     target.write_text("hello", encoding="utf-8")
 
     engine = SearchEngine(index_db_path=index_db)
-    list(engine.search_files(str(search_root), "file", search_within_files=False))
+    list(
+        engine.search_files(
+            str(search_root),
+            "file",
+            search_within_files=False,
+            search_backend=SearchBackend.PYTHON,
+        )
+    )
 
     from search_script.constants import PERSISTENT_INDEX_MAX_AGE_CEILING_S
 
@@ -863,6 +913,7 @@ def test_spot_check_triggers_rescan_on_delete(tmp_path: Path):
             "file",
             search_within_files=False,
             progress_callback=statuses.append,
+            search_backend=SearchBackend.PYTHON,
         )
     )
     assert InventoryManager.BACKGROUND_REFRESH_STATUS in statuses
@@ -1344,6 +1395,7 @@ def test_filename_search_progress_count(tmp_path: Path):
             str(tmp_path),
             "file",
             search_within_files=False,
+            search_backend=SearchBackend.PYTHON,
             progress_callback=progress_values.append,
         )
     )
@@ -1483,7 +1535,14 @@ def test_shutdown_stops_background_refresh(tmp_path: Path):
 
     engine = SearchEngine(index_db_path=index_db)
     # Build initial inventory
-    list(engine.search_files(str(search_root), "file", search_within_files=False))
+    list(
+        engine.search_files(
+            str(search_root),
+            "file",
+            search_within_files=False,
+            search_backend=SearchBackend.PYTHON,
+        )
+    )
 
     # Age the snapshot to trigger background refresh
     from search_script.constants import PERSISTENT_INDEX_MAX_AGE_S
@@ -1498,7 +1557,14 @@ def test_shutdown_stops_background_refresh(tmp_path: Path):
     engine._inventory._cache.clear()  # pyright: ignore[reportPrivateUsage]
 
     # Trigger a search that will start a background refresh
-    list(engine.search_files(str(search_root), "file", search_within_files=False))
+    list(
+        engine.search_files(
+            str(search_root),
+            "file",
+            search_within_files=False,
+            search_backend=SearchBackend.PYTHON,
+        )
+    )
 
     # Now shut down
     engine.shutdown()
@@ -1551,3 +1617,145 @@ def test_usdz_in_always_binary():
     """'.usdz' must be in the always-binary extensions set."""
     engine = SearchEngine()
     assert ".usdz" in engine._always_binary_extensions  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+def test_ripgrep_filename_substring_search(tmp_path: Path) -> None:
+    """Filename substring search should work via ripgrep backend."""
+    (tmp_path / "hello_world.txt").write_text("content")
+    (tmp_path / "goodbye.txt").write_text("content")
+    (tmp_path / "subdir").mkdir()
+    (tmp_path / "subdir" / "hello_again.py").write_text("content")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "hello",
+            search_within_files=False,
+            search_mode=SearchMode.SUBSTRING,
+            search_backend=SearchBackend.RIPGREP,
+        )
+    )
+    names = {Path(r.file_path).name for r in results}
+    assert names == {"hello_world.txt", "hello_again.py"}
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+def test_ripgrep_filename_glob_search(tmp_path: Path) -> None:
+    """Filename glob search should work via ripgrep backend."""
+    (tmp_path / "report.txt").write_text("content")
+    (tmp_path / "data.csv").write_text("content")
+    (tmp_path / "notes.txt").write_text("content")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "*.txt",
+            search_within_files=False,
+            search_mode=SearchMode.GLOB,
+            search_backend=SearchBackend.RIPGREP,
+        )
+    )
+    names = {Path(r.file_path).name for r in results}
+    assert names == {"report.txt", "notes.txt"}
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+def test_ripgrep_filename_regex_search(tmp_path: Path) -> None:
+    """Filename regex search should work via ripgrep backend."""
+    (tmp_path / "test1.py").write_text("content")
+    (tmp_path / "test2.py").write_text("content")
+    (tmp_path / "readme.md").write_text("content")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            r"test\d",
+            search_within_files=False,
+            search_mode=SearchMode.REGEX,
+            search_backend=SearchBackend.RIPGREP,
+        )
+    )
+    names = {Path(r.file_path).name for r in results}
+    assert names == {"test1.py", "test2.py"}
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+def test_ripgrep_filename_search_respects_type_filters(tmp_path: Path) -> None:
+    """Ripgrep filename search should filter by extension."""
+    (tmp_path / "code.py").write_text("content")
+    (tmp_path / "data.txt").write_text("content")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "co",
+            search_within_files=False,
+            search_mode=SearchMode.SUBSTRING,
+            search_backend=SearchBackend.RIPGREP,
+            include_types=[".py"],
+        )
+    )
+    names = {Path(r.file_path).name for r in results}
+    assert names == {"code.py"}
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+def test_ripgrep_filename_search_respects_max_results(tmp_path: Path) -> None:
+    """Ripgrep filename search should stop at max_results."""
+    for i in range(10):
+        (tmp_path / f"file_{i}.txt").write_text("content")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "file",
+            search_within_files=False,
+            search_mode=SearchMode.SUBSTRING,
+            search_backend=SearchBackend.RIPGREP,
+            max_results=3,
+        )
+    )
+    assert len(results) == 3
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+def test_ripgrep_filename_search_case_insensitive(tmp_path: Path) -> None:
+    """Ripgrep filename search should be case-insensitive by default."""
+    (tmp_path / "MyFile.TXT").write_text("content")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "myfile",
+            search_within_files=False,
+            search_mode=SearchMode.SUBSTRING,
+            search_backend=SearchBackend.RIPGREP,
+        )
+    )
+    assert len(results) == 1
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+def test_ripgrep_filename_search_falls_back_when_unavailable(tmp_path: Path) -> None:
+    """When rg is missing, filename search falls back to Python."""
+    (tmp_path / "target.txt").write_text("content")
+
+    engine = SearchEngine()
+    engine._rg_path = None  # pyright: ignore[reportPrivateUsage]
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "target",
+            search_within_files=False,
+            search_mode=SearchMode.SUBSTRING,
+            search_backend=SearchBackend.AUTO,
+        )
+    )
+    assert len(results) == 1
