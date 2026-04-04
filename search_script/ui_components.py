@@ -417,8 +417,8 @@ class SearchUI(QMainWindow):
             "search_mode": self.mode_combo.currentText(),
             "search_backend": self.backend_combo.currentText(),
             "max_depth": self._parse_optional_int(self.depth_entry.text()),
-            "min_size": self._parse_optional_int(self.min_size_entry.text()),
-            "max_size": self._parse_optional_int(self.max_size_entry.text()),
+            "min_size": self._parse_size_bytes(self.min_size_entry.text(), self.min_size_unit),
+            "max_size": self._parse_size_bytes(self.max_size_entry.text(), self.max_size_unit),
             "max_results": self._parse_optional_int(self.max_results_entry.text()),
             "match_folders": self.match_folders_checkbox.isChecked(),
             "follow_symlinks": self.follow_symlinks_checkbox.isChecked(),
@@ -831,6 +831,14 @@ class SearchUI(QMainWindow):
         """Parse an optional integer field after validation has run."""
         raw = value.strip()
         return int(raw) if raw else None
+
+    def _parse_size_bytes(self, text: str, unit_combo: QComboBox) -> int | None:
+        """Return size in bytes, or None if text is empty."""
+        raw = text.strip()
+        if not raw:
+            return None
+        unit_map = {"KB": 1024, "MB": 1024**2, "GB": 1024**3}
+        return int(raw) * unit_map[unit_combo.currentText()]
 
     def update_status(self, message: str):
         """Update status label text."""
