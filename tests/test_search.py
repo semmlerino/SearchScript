@@ -4,6 +4,7 @@ import gc
 import os
 import queue
 import shutil
+import sqlite3
 from datetime import datetime, timedelta
 from time import monotonic, sleep
 from typing import cast
@@ -18,6 +19,7 @@ from search_script.config import ValidationError
 from search_script.file_utils import FileOperations
 from search_script.search_controller import SearchController
 from search_script.search_engine import SearchBackend, SearchEngine, SearchMode, SearchResult
+from search_script.search_index import InventoryCacheKey, InventorySnapshot, SearchIndexStore
 from search_script.ui_components import SearchUI
 
 
@@ -295,9 +297,20 @@ def test_search_engine_refreshes_stale_persistent_index_in_background(tmp_path):
     index_db = tmp_path / "inventory.sqlite3"
     (search_root / "one.txt").write_text("hello", encoding="utf-8")
 
+    # Build and persist an initial inventory.
     first_engine = SearchEngine(index_db_path=index_db)
     list(first_engine.search_files(str(search_root), "txt", search_within_files=False))
 
+    # Age the persisted entry past the TTL so the next load considers it stale.
+    from search_script.constants import PERSISTENT_INDEX_MAX_AGE_S
+
+    with sqlite3.connect(str(index_db)) as conn:
+        conn.execute(
+            "UPDATE inventories SET created_at = created_at - ?",
+            (PERSISTENT_INDEX_MAX_AGE_S + 1,),
+        )
+
+    # Add a file that the stale snapshot does not know about.
     (search_root / "two.txt").write_text("hello", encoding="utf-8")
 
     statuses: list[str] = []
@@ -329,6 +342,63 @@ def test_search_engine_refreshes_stale_persistent_index_in_background(tmp_path):
     assert len(stale_results) == 1
     assert len(fresh_results) == 2
     assert second_engine.BACKGROUND_REFRESH_STATUS in statuses
+
+
+def test_include_ignored_cache_key_separation(tmp_path):
+    """Snapshots with include_ignored=True and False must not collide in the index."""
+    from time import time as _time
+
+    from search_script.search_index import InventoryEntry
+
+    index_db = tmp_path / "inventory.sqlite3"
+    store = SearchIndexStore(db_path=index_db)
+
+    cache_key_included = InventoryCacheKey(
+        directory=str(tmp_path),
+        max_depth=None,
+        follow_symlinks=False,
+        include_ignored=True,
+    )
+    cache_key_excluded = InventoryCacheKey(
+        directory=str(tmp_path),
+        max_depth=None,
+        follow_symlinks=False,
+        include_ignored=False,
+    )
+
+    now = _time()
+    snapshot_included = InventorySnapshot(
+        files=[
+            InventoryEntry(
+                file_path=str(tmp_path / "ignored.txt"),
+                parent_dir=str(tmp_path),
+                file_name="ignored.txt",
+                file_lower="ignored.txt",
+                mod_time=0.0,
+                file_size=0,
+            )
+        ],
+        directories=[str(tmp_path)],
+        created_at=now,
+    )
+    snapshot_excluded = InventorySnapshot(
+        files=[],
+        directories=[str(tmp_path)],
+        created_at=now,
+    )
+
+    store.save_snapshot(cache_key_included, snapshot_included)
+    store.save_snapshot(cache_key_excluded, snapshot_excluded)
+
+    from search_script.constants import PERSISTENT_INDEX_MAX_AGE_S
+
+    result_included = store.load_snapshot(cache_key_included, max_age_s=PERSISTENT_INDEX_MAX_AGE_S)
+    result_excluded = store.load_snapshot(cache_key_excluded, max_age_s=PERSISTENT_INDEX_MAX_AGE_S)
+
+    assert result_included is not None
+    assert result_excluded is not None
+    assert len(result_included.snapshot.files) == 1
+    assert len(result_excluded.snapshot.files) == 0
 
 
 def test_filename_search_honors_max_results(tmp_path):
@@ -785,6 +855,50 @@ def test_include_ignored_true_returns_all(tmp_path):
     paths = {r.file_path for r in results}
     assert str(tmp_path / "app.py") in paths
     assert str(tmp_path / "debug.log") in paths
+
+
+def test_nested_gitignore_anchored_patterns(tmp_path):
+    """Anchored patterns in nested .gitignore files apply only relative to that file's directory."""
+    # Root .gitignore — ignores *.log everywhere
+    (tmp_path / ".gitignore").write_text("*.log\n")
+
+    # Root-level build/ should NOT be ignored (no root .gitignore rule for it)
+    root_build = tmp_path / "build"
+    root_build.mkdir()
+    (root_build / "artifact.txt").write_text("needle")
+
+    # subdir/.gitignore with anchored /build — should only ignore subdir/build/
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+    (subdir / ".gitignore").write_text("/build\n")
+    (subdir / "source.py").write_text("needle")
+
+    subdir_build = subdir / "build"
+    subdir_build.mkdir()
+    (subdir_build / "output.txt").write_text("needle")
+
+    engine = SearchEngine()
+    # Call _walk_scandir directly to test gitignore logic without going through
+    # the inventory snapshot path (which has a separate pre-existing bug).
+    walked = list(
+        engine._walk_scandir(
+            str(tmp_path),
+            max_depth=None,
+            follow_symlinks=False,
+            cancel_event=None,
+            include_ignored=False,
+        )
+    )
+    # Extract file paths from (dir_path, entry) tuples where entry is not None
+    paths = {entry.path for _, entry in walked if entry is not None}
+
+    # root/build/artifact.txt must be present — root .gitignore has no /build rule
+    assert str(root_build / "artifact.txt") in paths, "root/build/ should not be ignored"
+    # subdir/source.py must be present
+    assert str(subdir / "source.py") in paths, "subdir/source.py should not be ignored"
+    # subdir/build/output.txt must be absent — subdir/.gitignore has anchored /build
+    # subdir/build/ should be ignored by nested .gitignore
+    assert str(subdir_build / "output.txt") not in paths
 
 
 # ---------------------------------------------------------------------------

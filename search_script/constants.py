@@ -6,7 +6,7 @@ LARGE_FILE_MMAP_THRESHOLD = 1024 * 1024  # 1 MB
 
 # Inventory / caching
 INVENTORY_CACHE_TTL_S = 10.0  # in-memory freshness window
-PERSISTENT_INDEX_MAX_AGE_S = 6 * 60 * 60  # SQLite index max age (6 hours)
+PERSISTENT_INDEX_MAX_AGE_S = 300  # SQLite index max age (5 minutes)
 INVENTORY_CACHE_MAX_ENTRIES = 6  # max in-memory cache slots
 
 # Progress reporting intervals

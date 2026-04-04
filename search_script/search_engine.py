@@ -521,14 +521,10 @@ class SearchEngine:
             follow_symlinks=follow_symlinks,
             include_ignored=include_ignored,
         )
-        root_mtime_ns = self._get_directory_mtime_ns(directory)
         stale_snapshot: InventorySnapshot | None = None
         with self._inventory_cache_lock:
             snapshot = self._inventory_cache.get(cache_key)
-            if snapshot is not None and self._is_inventory_snapshot_fresh(
-                snapshot,
-                root_mtime_ns=root_mtime_ns,
-            ):
+            if snapshot is not None and self._is_inventory_snapshot_fresh(snapshot):
                 if progress_callback:
                     progress_callback(
                         f"Reusing cached file inventory ({len(snapshot.files)} files)"
@@ -538,7 +534,6 @@ class SearchEngine:
 
         load_result = self._index_store.load_snapshot(
             cache_key,
-            root_mtime_ns=root_mtime_ns,
             max_age_s=PERSISTENT_INDEX_MAX_AGE_S,
             allow_stale=True,
         )
@@ -572,7 +567,6 @@ class SearchEngine:
             follow_symlinks=follow_symlinks,
             progress_callback=progress_callback,
             cancel_event=cancel_event,
-            root_mtime_ns=root_mtime_ns,
             include_ignored=include_ignored,
         )
         if snapshot is None:
@@ -581,23 +575,12 @@ class SearchEngine:
         self._store_inventory_snapshot(cache_key, snapshot)
         return snapshot
 
-    def _get_directory_mtime_ns(self, directory: str) -> int | None:
-        """Read the root directory mtime for cache freshness checks."""
-        try:
-            return os.stat(directory).st_mtime_ns
-        except OSError:
-            return None
-
     def _is_inventory_snapshot_fresh(
         self,
         snapshot: InventorySnapshot,
-        *,
-        root_mtime_ns: int | None,
     ) -> bool:
         """Check whether a cached snapshot can be reused safely enough."""
-        if time() - snapshot.created_at > INVENTORY_CACHE_TTL_S:
-            return False
-        return snapshot.root_mtime_ns == root_mtime_ns
+        return time() - snapshot.created_at <= INVENTORY_CACHE_TTL_S
 
     def _store_inventory_snapshot(
         self,
@@ -661,7 +644,6 @@ class SearchEngine:
                 follow_symlinks=follow_symlinks,
                 progress_callback=None,
                 cancel_event=None,
-                root_mtime_ns=self._get_directory_mtime_ns(directory),
                 include_ignored=include_ignored,
             )
             if snapshot is None:
@@ -681,7 +663,6 @@ class SearchEngine:
         follow_symlinks: bool,
         progress_callback,
         cancel_event: threading.Event | None,
-        root_mtime_ns: int | None,
         include_ignored: bool = True,
     ) -> InventorySnapshot | None:
         """Build a file inventory for repeated scan-based searches."""
@@ -727,7 +708,6 @@ class SearchEngine:
             files=files,
             directories=directories,
             created_at=time(),
-            root_mtime_ns=root_mtime_ns,
         )
 
     def _check_cached_inventory_filters(
@@ -1470,7 +1450,7 @@ class SearchEngine:
         include_ignored: bool = True,
         _current_depth: int = 0,
         _seen_realpaths: set[str] | None = None,
-        _gitignore_spec: "pathspec.PathSpec | None" = None,
+        _gitignore_specs: "list[tuple[str, pathspec.PathSpec]] | None" = None,
         _root_directory: str | None = None,
     ) -> Generator[tuple[str, os.DirEntry[str] | None], None, None]:
         """Walk directory tree using os.scandir for cached d_type (no extra stat on Linux).
@@ -1494,10 +1474,7 @@ class SearchEngine:
                 try:
                     with open(gitignore_path) as f:
                         new_spec = pathspec.PathSpec.from_lines("gitignore", f)
-                    if _gitignore_spec is not None:
-                        _gitignore_spec = _gitignore_spec + new_spec
-                    else:
-                        _gitignore_spec = new_spec
+                    _gitignore_specs = (_gitignore_specs or []) + [(directory, new_spec)]
                 except OSError:
                     pass
 
@@ -1511,12 +1488,18 @@ class SearchEngine:
                     if cancel_event and cancel_event.is_set():
                         return
                     try:
-                        if _gitignore_spec is not None:
-                            rel_path = os.path.relpath(entry.path, _root_directory)
-                            if entry.is_dir(follow_symlinks=follow_symlinks):
-                                if _gitignore_spec.match_file(rel_path + "/"):
-                                    continue
-                            elif _gitignore_spec.match_file(rel_path):
+                        if _gitignore_specs is not None:
+                            ignored = False
+                            for spec_dir, spec in _gitignore_specs:
+                                rel_path = entry.path[len(spec_dir) :].lstrip(os.sep)
+                                if entry.is_dir(follow_symlinks=follow_symlinks):
+                                    if spec.match_file(rel_path + "/"):
+                                        ignored = True
+                                        break
+                                elif spec.match_file(rel_path):
+                                    ignored = True
+                                    break
+                            if ignored:
                                 continue
                         if entry.is_file(follow_symlinks=follow_symlinks):
                             yield (directory, entry)
@@ -1542,6 +1525,6 @@ class SearchEngine:
                 include_ignored,
                 _current_depth + 1,
                 _seen_realpaths,
-                _gitignore_spec,
+                _gitignore_specs,
                 _root_directory,
             )

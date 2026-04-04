@@ -32,7 +32,6 @@ class InventorySnapshot:
     files: list[InventoryEntry]
     directories: list[str]
     created_at: float
-    root_mtime_ns: int | None
 
 
 @dataclass(frozen=True)
@@ -61,7 +60,6 @@ class SearchIndexStore:
         self,
         cache_key: InventoryCacheKey,
         *,
-        root_mtime_ns: int | None,
         max_age_s: float,
         allow_stale: bool = False,
     ) -> InventoryLoadResult | None:
@@ -75,7 +73,7 @@ class SearchIndexStore:
                 conn.row_factory = sqlite3.Row
                 metadata = conn.execute(
                     """
-                    SELECT created_at, root_mtime_ns
+                    SELECT created_at
                     FROM inventories
                     WHERE cache_key = ?
                     """,
@@ -85,16 +83,7 @@ class SearchIndexStore:
                     return None
 
                 created_at = float(metadata["created_at"])
-                stored_root_mtime_ns = metadata["root_mtime_ns"]
-                is_fresh = True
-                if time() - created_at > max_age_s:
-                    is_fresh = False
-                if (
-                    root_mtime_ns is not None
-                    and stored_root_mtime_ns is not None
-                    and int(stored_root_mtime_ns) != root_mtime_ns
-                ):
-                    is_fresh = False
+                is_fresh = time() - created_at <= max_age_s
                 if not is_fresh and not allow_stale:
                     return None
 
@@ -138,9 +127,6 @@ class SearchIndexStore:
                 files=files,
                 directories=directories,
                 created_at=created_at,
-                root_mtime_ns=(
-                    int(stored_root_mtime_ns) if stored_root_mtime_ns is not None else None
-                ),
             ),
             is_fresh=is_fresh,
         )
@@ -157,7 +143,6 @@ class SearchIndexStore:
         serialized_key = self._serialize_cache_key(cache_key)
         try:
             with self._lock, sqlite3.connect(self.db_path) as conn:
-                conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute(
                     """
                     INSERT INTO inventories (
@@ -165,16 +150,14 @@ class SearchIndexStore:
                         directory,
                         max_depth,
                         follow_symlinks,
-                        created_at,
-                        root_mtime_ns
+                        created_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(cache_key) DO UPDATE SET
                         directory = excluded.directory,
                         max_depth = excluded.max_depth,
                         follow_symlinks = excluded.follow_symlinks,
-                        created_at = excluded.created_at,
-                        root_mtime_ns = excluded.root_mtime_ns
+                        created_at = excluded.created_at
                     """,
                     (
                         serialized_key,
@@ -182,7 +165,6 @@ class SearchIndexStore:
                         cache_key.max_depth,
                         int(cache_key.follow_symlinks),
                         snapshot.created_at,
-                        snapshot.root_mtime_ns,
                     ),
                 )
                 conn.execute(
@@ -245,8 +227,9 @@ class SearchIndexStore:
         return json.dumps(
             {
                 "directory": cache_key.directory,
-                "max_depth": cache_key.max_depth,
                 "follow_symlinks": cache_key.follow_symlinks,
+                "include_ignored": cache_key.include_ignored,
+                "max_depth": cache_key.max_depth,
             },
             separators=(",", ":"),
             sort_keys=True,
@@ -263,6 +246,7 @@ class SearchIndexStore:
             try:
                 self.db_path.parent.mkdir(parents=True, exist_ok=True)
                 with sqlite3.connect(self.db_path) as conn:
+                    conn.execute("PRAGMA journal_mode=WAL")
                     conn.executescript(
                         """
                         CREATE TABLE IF NOT EXISTS inventories (
@@ -270,8 +254,7 @@ class SearchIndexStore:
                             directory TEXT NOT NULL,
                             max_depth INTEGER,
                             follow_symlinks INTEGER NOT NULL,
-                            created_at REAL NOT NULL,
-                            root_mtime_ns INTEGER
+                            created_at REAL NOT NULL
                         );
 
                         CREATE TABLE IF NOT EXISTS inventory_dirs (
