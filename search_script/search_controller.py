@@ -36,6 +36,7 @@ class SearchController:
         self.search_was_truncated = False
         self.search_result_limit: int | None = None
         self._last_search_params: dict[str, Any] | None = None
+        self._search_generation: int = 0
 
         # Setup callbacks
         self._setup_callbacks()
@@ -99,27 +100,37 @@ class SearchController:
         search_params["modified_before"] = modified_before
         self._last_search_params = dict(search_params)
 
+        # Auto-cancel running search
+        self._search_generation += 1
+        generation = self._search_generation
+        if self.search_thread is not None and self.search_thread.is_alive():
+            self.cancel_event.set()
+
         # Reset UI state
         self.ui.set_search_state(True)
         self.ui.clear_results()
         self.ui.update_status("Starting search...")
 
-        # Setup threading
-        self.cancel_event.clear()
+        # Setup threading — fresh cancel event for this generation
+        self.cancel_event = threading.Event()
+        cancel_event = self.cancel_event
         self.result_queue = queue.Queue()
         self.search_was_truncated = False
         self.search_result_limit = search_params.get("max_results")
 
         # Start search thread
         self.search_thread = threading.Thread(
-            target=self._search_worker, args=(search_params,), daemon=True
+            target=self._search_worker, args=(search_params, cancel_event), daemon=True
         )
         self.search_thread.start()
 
         # Start monitoring results
-        QTimer.singleShot(RESULT_POLL_INITIAL_DELAY_MS, self._process_results)
+        QTimer.singleShot(
+            RESULT_POLL_INITIAL_DELAY_MS,
+            lambda g=generation: self._process_results(g),  # pyright: ignore[reportUnknownLambdaType,reportUnknownArgumentType]
+        )
 
-    def _search_worker(self, search_params: dict[str, Any]):
+    def _search_worker(self, search_params: dict[str, Any], cancel_event: threading.Event):
         """Worker thread for search operations."""
         try:
             count = 0
@@ -161,11 +172,12 @@ class SearchController:
                 follow_symlinks=search_params.get("follow_symlinks", False),
                 include_ignored=search_params.get("include_ignored", True),
                 context_lines=search_params.get("context_lines", 0),
+                case_sensitive=search_params.get("case_sensitive", False),
                 progress_callback=progress_callback,
                 on_limit_reached=on_limit_reached,
-                cancel_event=self.cancel_event,
+                cancel_event=cancel_event,
             ):
-                if self.cancel_event.is_set():
+                if cancel_event.is_set():
                     flush_batch()
                     msg = f"Search cancelled. Found {count} matches."
                     self.result_queue.put(("cancelled", msg))
@@ -185,8 +197,11 @@ class SearchController:
             self.result_queue.put(("error", error_msg))
             self.logger.error(error_msg)
 
-    def _process_results(self):
+    def _process_results(self, generation: int):
         """Process results from the search thread."""
+        if generation != self._search_generation:
+            return  # Stale generation — discard
+
         batch: list[SearchResult] = []
         started_at = monotonic()
         try:
@@ -227,7 +242,7 @@ class SearchController:
 
         if self.search_thread and self.search_thread.is_alive():
             delay_ms = 0 if not self.result_queue.empty() else RESULT_POLL_BACKOFF_DELAY_MS
-            QTimer.singleShot(delay_ms, self._process_results)
+            QTimer.singleShot(delay_ms, lambda g=generation: self._process_results(g))  # pyright: ignore[reportUnknownLambdaType,reportUnknownArgumentType]
         else:
             sentinel = self._drain_remaining_results()
             if sentinel is not None:

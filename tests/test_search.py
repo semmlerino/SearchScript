@@ -547,7 +547,8 @@ def test_controller_search_worker_batches_results(qapp: QApplication):
             "modified_before": None,
             "match_folders": False,
             "follow_symlinks": False,
-        }
+        },
+        controller.cancel_event,
     )
 
     msg_type, batch = controller.result_queue.get_nowait()
@@ -588,7 +589,8 @@ def test_controller_search_worker_forwards_backend_and_dates(qapp: QApplication)
             "modified_before": modified_before,
             "match_folders": False,
             "follow_symlinks": False,
-        }
+        },
+        controller.cancel_event,
     )
 
     assert captured["search_backend"] == SearchBackend.RIPGREP

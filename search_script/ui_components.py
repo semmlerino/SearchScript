@@ -167,6 +167,9 @@ class SearchUI(QMainWindow):
         self.backend_combo.setFixedWidth(100)
         row.addWidget(self.backend_combo)
 
+        self.case_sensitive_checkbox = QCheckBox("Case sensitive")
+        row.addWidget(self.case_sensitive_checkbox)
+
         row.addWidget(QLabel("Preset:"))
         self.preset_combo = QComboBox()
         self.preset_combo.addItems(
@@ -393,6 +396,7 @@ class SearchUI(QMainWindow):
             "follow_symlinks": self.follow_symlinks_checkbox.isChecked(),
             "include_ignored": self.include_ignored_checkbox.isChecked(),
             "context_lines": self.context_lines_spin.value(),
+            "case_sensitive": self.case_sensitive_checkbox.isChecked(),
         }
         self.search_requested.emit(search_params)
 
@@ -580,7 +584,7 @@ class SearchUI(QMainWindow):
 
     def set_search_state(self, searching: bool):
         """Update UI state for search/idle."""
-        self.search_button.setEnabled(not searching)
+        # Search button stays enabled so user can auto-restart with new params
         self.cancel_button.setEnabled(searching)
 
         if not searching:

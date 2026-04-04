@@ -115,6 +115,7 @@ class MatchPlan:
     raw_term: str
     normalized_term: str
     regex: re.Pattern[str] | None = None
+    case_sensitive: bool = False
 
 
 class SearchEngine:
@@ -230,6 +231,7 @@ class SearchEngine:
         follow_symlinks: bool = False,
         include_ignored: bool = True,
         context_lines: int = 0,
+        case_sensitive: bool = False,
         progress_callback: Callable[[str], None] | None = None,
         cancel_event: threading.Event | None = None,
         on_limit_reached: Callable[[int], None] | None = None,
@@ -262,7 +264,7 @@ class SearchEngine:
 
         include_types = self._normalize_file_types(include_types)
         exclude_types = self._normalize_file_types(exclude_types)
-        match_plan = self._build_match_plan(search_term, search_mode)
+        match_plan = self._build_match_plan(search_term, search_mode, case_sensitive=case_sensitive)
         modified_after_ts = modified_after.timestamp() if modified_after is not None else None
         modified_before_ts = modified_before.timestamp() if modified_before is not None else None
 
@@ -803,13 +805,16 @@ class SearchEngine:
             file_path=Path(entry.file_path),
         )
 
-    def _build_match_plan(self, search_term: str, search_mode: SearchMode) -> MatchPlan:
+    def _build_match_plan(
+        self, search_term: str, search_mode: SearchMode, case_sensitive: bool = False
+    ) -> MatchPlan:
         """Compile reusable match state for the active query."""
-        normalized_term = search_term.lower()
+        normalized_term = search_term if case_sensitive else search_term.lower()
         regex: re.Pattern[str] | None = None
         if search_mode == SearchMode.REGEX:
             try:
-                regex = re.compile(search_term, re.IGNORECASE)
+                flags = 0 if case_sensitive else re.IGNORECASE
+                regex = re.compile(search_term, flags)
             except re.error as exc:
                 raise ValidationError(f"Invalid regular expression: {exc}") from exc
         return MatchPlan(
@@ -817,6 +822,7 @@ class SearchEngine:
             raw_term=search_term,
             normalized_term=normalized_term,
             regex=regex,
+            case_sensitive=case_sensitive,
         )
 
     def _is_likely_binary(self, file_path: Path) -> bool:
@@ -875,13 +881,18 @@ class SearchEngine:
     ) -> tuple[float, int, int] | None:
         """Return (score, match_start, match_length), or None when no match."""
         if match_plan.mode == SearchMode.SUBSTRING:
-            idx = text.lower().find(match_plan.normalized_term)
+            haystack = text if match_plan.case_sensitive else text.lower()
+            idx = haystack.find(match_plan.normalized_term)
             if idx >= 0:
                 return (100.0, idx, len(match_plan.normalized_term))
             return None
         if match_plan.mode == SearchMode.GLOB:
             pattern = self._ensure_glob_wildcard(match_plan.raw_term)
-            if fnmatch.fnmatch(text.lower(), pattern.lower()):
+            if match_plan.case_sensitive:
+                matched = fnmatch.fnmatch(text, pattern)
+            else:
+                matched = fnmatch.fnmatch(text.lower(), pattern.lower())
+            if matched:
                 return (100.0, 0, len(text))
             return None
         if match_plan.mode == SearchMode.REGEX:
@@ -1309,7 +1320,6 @@ class SearchEngine:
             "--color",
             "never",
             "--no-messages",
-            "--glob-case-insensitive",
             "--threads",
             str(self.max_workers),
         ]
@@ -1332,7 +1342,10 @@ class SearchEngine:
         elif match_plan.mode == SearchMode.GLOB:
             pattern = self._translate_glob_to_regex(match_plan.raw_term)
 
-        command.extend(["-i", pattern, directory])
+        if not match_plan.case_sensitive:
+            command.append("-i")
+            command.append("--glob-case-insensitive")
+        command.extend([pattern, directory])
         return command
 
     def _translate_glob_to_regex(self, search_term: str) -> str:
