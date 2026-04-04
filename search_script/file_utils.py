@@ -1,10 +1,16 @@
 import functools
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
+
+from .constants import VFX_FRAME_LEAF_PARENT_NAMES
+
+_VFX_FRAME_LEAF_DIR_RE = re.compile(r"^\d{3,5}x\d{3,5}$")
 
 
 @functools.lru_cache(maxsize=1)
@@ -32,6 +38,22 @@ def is_nfs_path(path: str) -> bool:
         return False
     resolved = os.path.realpath(path)
     return any(resolved == mp or resolved.startswith(mp + "/") for mp in mps)
+
+
+def is_vfx_frame_leaf_dir_name(dir_name: str, parent_name: str) -> bool:
+    """Return True for dense resolution buckets like exr/1920x1080."""
+    return parent_name.lower() in VFX_FRAME_LEAF_PARENT_NAMES and bool(
+        _VFX_FRAME_LEAF_DIR_RE.fullmatch(dir_name)
+    )
+
+
+def is_within_vfx_frame_leaf(path: str | Path) -> bool:
+    """Return True if path is at or beneath a dense VFX frame-leaf directory."""
+    parts = Path(path).parts
+    return any(
+        is_vfx_frame_leaf_dir_name(parts[index], parts[index - 1])
+        for index in range(1, len(parts))
+    )
 
 
 class FileOperations:

@@ -1286,6 +1286,28 @@ def test_python_filename_search_prunes_snapshots(tmp_path: Path) -> None:
     assert names == {"visible_target.txt"}
 
 
+def test_python_filename_search_prunes_vfx_frame_leaf_dirs(tmp_path: Path) -> None:
+    """Python inventory search should skip dense frame buckets like exr/1920x1080."""
+    (tmp_path / "visible_target.txt").write_text("content")
+    frame_dir = tmp_path / "publish" / "plate" / "v001" / "exr" / "1920x1080"
+    frame_dir.mkdir(parents=True)
+    (frame_dir / "frame_target.0001.exr").write_text("content")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "target",
+            search_within_files=False,
+            search_backend=SearchBackend.PYTHON,
+            include_ignored=True,
+        )
+    )
+
+    names = {Path(r.file_path).name for r in results}
+    assert names == {"visible_target.txt"}
+
+
 def test_nested_gitignore_anchored_patterns(tmp_path: Path):
     """Anchored patterns in nested .gitignore files apply only relative to that file's directory."""
     # Root .gitignore — ignores *.log everywhere
@@ -1857,6 +1879,53 @@ def test_ripgrep_include_ignored_searches_hidden_dirs_but_prunes_snapshots(
 
     names = {Path(r.file_path).name for r in results}
     assert names == {"hidden_target.txt", "visible_target.txt"}
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+def test_ripgrep_filename_search_prunes_vfx_frame_leaf_dirs(tmp_path: Path) -> None:
+    """Ripgrep filename search should prune frame buckets under image-format directories."""
+    exr_root = tmp_path / "publish" / "plate" / "v001" / "exr"
+    exr_root.mkdir(parents=True)
+    (exr_root / "manifest_target.txt").write_text("content")
+    frame_dir = exr_root / "1920x1080"
+    frame_dir.mkdir()
+    (frame_dir / "frame_target.0001.exr").write_text("content")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(exr_root),
+            "target",
+            search_within_files=False,
+            search_mode=SearchMode.SUBSTRING,
+            search_backend=SearchBackend.RIPGREP,
+        )
+    )
+
+    names = {Path(r.file_path).name for r in results}
+    assert names == {"manifest_target.txt"}
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+def test_ripgrep_filename_search_allows_explicit_vfx_frame_leaf_root(tmp_path: Path) -> None:
+    """Searching directly inside a frame bucket should still return frame-level results."""
+    frame_dir = tmp_path / "publish" / "plate" / "v001" / "exr" / "1920x1080"
+    frame_dir.mkdir(parents=True)
+    (frame_dir / "frame_target.0001.exr").write_text("content")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(frame_dir),
+            "target",
+            search_within_files=False,
+            search_mode=SearchMode.SUBSTRING,
+            search_backend=SearchBackend.RIPGREP,
+        )
+    )
+
+    names = {Path(r.file_path).name for r in results}
+    assert names == {"frame_target.0001.exr"}
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")

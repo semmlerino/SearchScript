@@ -27,13 +27,22 @@ from .constants import (
     PRUNED_DIRECTORY_NAMES,
     SPOT_CHECK_SAMPLE_SIZE,
 )
-from .file_utils import is_nfs_path
+from .file_utils import is_nfs_path, is_vfx_frame_leaf_dir_name
 from .search_index import (
     InventoryCacheKey,
     InventoryEntry,
     InventorySnapshot,
     SearchIndexStore,
 )
+
+
+def _should_prune_subdir(dir_name: str, parent_name: str, *, exclude_shots: bool) -> bool:
+    """Skip pathological subtrees and dense VFX frame leaves."""
+    if dir_name in PRUNED_DIRECTORY_NAMES:
+        return True
+    if exclude_shots and dir_name == "shots":
+        return True
+    return is_vfx_frame_leaf_dir_name(dir_name, parent_name)
 
 
 @dataclass
@@ -376,6 +385,7 @@ class InventoryManager:
         yield (directory, None)
 
         try:
+            current_dir_name = os.path.basename(directory)
             with os.scandir(directory) as entries:
                 subdirs: list[os.DirEntry[str]] = []
                 for entry in entries:
@@ -398,9 +408,11 @@ class InventoryManager:
                         if entry.is_file(follow_symlinks=follow_symlinks):
                             yield (directory, entry)
                         elif entry.is_dir(follow_symlinks=follow_symlinks):
-                            if entry.name in PRUNED_DIRECTORY_NAMES:
-                                continue
-                            if exclude_shots and entry.name == "shots":
+                            if _should_prune_subdir(
+                                entry.name,
+                                current_dir_name,
+                                exclude_shots=exclude_shots,
+                            ):
                                 continue
                             subdirs.append(entry)
                     except OSError:
@@ -476,6 +488,7 @@ class InventoryManager:
                 return local_files, local_dirs, sub_items
 
             current_gitignore_specs = work.gitignore_specs
+            current_dir_name = os.path.basename(work.directory)
 
             if not include_ignored:
                 gitignore_path = os.path.join(work.directory, ".gitignore")
@@ -528,9 +541,11 @@ class InventoryManager:
                                     )
                                 )
                             elif entry.is_dir(follow_symlinks=follow_symlinks):
-                                if entry.name in PRUNED_DIRECTORY_NAMES:
-                                    continue
-                                if exclude_shots and entry.name == "shots":
+                                if _should_prune_subdir(
+                                    entry.name,
+                                    current_dir_name,
+                                    exclude_shots=exclude_shots,
+                                ):
                                     continue
                                 if max_depth is not None and work.depth + 1 > max_depth:
                                     continue

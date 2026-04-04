@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from time import time
 
+from .constants import INVENTORY_CACHE_FORMAT_VERSION
+
 
 @dataclass(frozen=True)
 class InventoryCacheKey:
@@ -308,6 +310,7 @@ class SearchIndexStore:
         """Serialize an inventory cache key into a stable string identifier."""
         return json.dumps(
             {
+                "format_version": INVENTORY_CACHE_FORMAT_VERSION,
                 "directory": cache_key.directory,
                 "exclude_shots": cache_key.exclude_shots,
                 "follow_symlinks": cache_key.follow_symlinks,

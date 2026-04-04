@@ -11,8 +11,14 @@ from pathlib import Path
 from queue import Empty, Queue
 
 from .config import SearchError
-from .constants import NFS_MAX_WORKERS_CAP, PRUNED_DIRECTORY_NAMES, RIPGREP_PROGRESS_MILESTONE
-from .file_utils import is_nfs_path
+from .constants import (
+    NFS_MAX_WORKERS_CAP,
+    PRUNED_DIRECTORY_NAMES,
+    RIPGREP_PROGRESS_MILESTONE,
+    VFX_FRAME_LEAF_DIR_GLOB,
+    VFX_FRAME_LEAF_PARENT_NAMES,
+)
+from .file_utils import is_nfs_path, is_within_vfx_frame_leaf
 from .models import (
     MatchPlan,
     SearchMode,
@@ -41,7 +47,8 @@ class RipgrepBackend:
         exclude_shots: bool,
     ) -> None:
         """Append globs that prune expensive subtrees while preserving explicit root searches."""
-        root_name = Path(directory).name
+        root_path = Path(directory)
+        root_name = root_path.name.lower()
         pruned_names = list(PRUNED_DIRECTORY_NAMES)
         if exclude_shots:
             pruned_names.append("shots")
@@ -49,6 +56,11 @@ class RipgrepBackend:
             if root_name == dir_name:
                 continue
             command.extend(["-g", f"!**/{dir_name}/**"])
+        if not is_within_vfx_frame_leaf(root_path):
+            for parent_name in VFX_FRAME_LEAF_PARENT_NAMES:
+                command.extend(["-g", f"!**/{parent_name}/{VFX_FRAME_LEAF_DIR_GLOB}/**"])
+            if root_name in VFX_FRAME_LEAF_PARENT_NAMES:
+                command.extend(["-g", f"!{VFX_FRAME_LEAF_DIR_GLOB}/**"])
 
     def search(
         self,

@@ -12,7 +12,12 @@ ADAPTIVE_TTL_SCAN_THRESHOLD_S = 1.0  # scans faster than this use base TTL
 ADAPTIVE_TTL_DIVISOR = 2.5  # scaling factor for slow-scan TTL
 SPOT_CHECK_SAMPLE_SIZE = 30  # files to stat-check before full rescan
 INVENTORY_CACHE_MAX_ENTRIES = 20  # max in-memory cache slots
+INVENTORY_CACHE_FORMAT_VERSION = 2  # bump when inventory pruning/index semantics change
 PRUNED_DIRECTORY_NAMES = frozenset({".snapshots"})  # always skip pathological trees
+VFX_FRAME_LEAF_PARENT_NAMES = frozenset(
+    {"dpx", "exr", "jpeg", "jpg", "png", "tif", "tiff"}
+)
+VFX_FRAME_LEAF_DIR_GLOB = "[0-9][0-9][0-9]*x[0-9][0-9][0-9]*"
 
 # Progress reporting intervals
 INVENTORY_PROGRESS_MILESTONE = 250  # report every N files during inventory walk
