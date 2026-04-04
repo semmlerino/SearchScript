@@ -196,6 +196,9 @@ class SearchUI(QMainWindow):
         row.addWidget(self.match_folders_checkbox)
         self.follow_symlinks_checkbox = QCheckBox("Follow symlinks")
         row.addWidget(self.follow_symlinks_checkbox)
+        self.include_ignored_checkbox = QCheckBox("Include ignored files")
+        self.include_ignored_checkbox.setChecked(True)
+        row.addWidget(self.include_ignored_checkbox)
         row.addStretch()
 
         self._main_layout.addLayout(row)
@@ -326,6 +329,7 @@ class SearchUI(QMainWindow):
             "max_results": self._parse_optional_int(self.max_results_entry.text()),
             "match_folders": self.match_folders_checkbox.isChecked(),
             "follow_symlinks": self.follow_symlinks_checkbox.isChecked(),
+            "include_ignored": self.include_ignored_checkbox.isChecked(),
         }
         self.search_requested.emit(search_params)
 

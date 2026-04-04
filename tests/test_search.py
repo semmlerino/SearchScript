@@ -686,3 +686,101 @@ def test_search_small_file_attribute_error_propagates(tmp_path):
                 search_backend=SearchBackend.PYTHON,
             )
         )
+
+
+def test_bom_detection_utf16(tmp_path):
+    """BOM detection must find UTF-16 content without relying on chardet."""
+    test_file = tmp_path / "bom_test.txt"
+    test_file.write_text("needle here\n", encoding="utf-16")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "needle",
+            search_within_files=True,
+            search_backend=SearchBackend.PYTHON,
+        )
+    )
+
+    assert len(results) == 1
+    assert results[0].line_content == "needle here"
+
+
+def test_threaded_content_search_correctness(tmp_path):
+    """Parallel content search with 1 and 4 workers must return the same result set."""
+    for i in range(10):
+        f = tmp_path / f"file_{i:02d}.txt"
+        f.write_text(f"line before\nneedle on line {i}\nline after\n", encoding="utf-8")
+
+    engine_single = SearchEngine(max_workers=1)
+    results_single = list(
+        engine_single.search_files(
+            str(tmp_path),
+            "needle",
+            search_within_files=True,
+            search_backend=SearchBackend.PYTHON,
+        )
+    )
+
+    engine_multi = SearchEngine(max_workers=4)
+    results_multi = list(
+        engine_multi.search_files(
+            str(tmp_path),
+            "needle",
+            search_within_files=True,
+            search_backend=SearchBackend.PYTHON,
+        )
+    )
+
+    # Same files found, order may differ
+    assert sorted((r.file_path, r.line_number) for r in results_single) == sorted(
+        (r.file_path, r.line_number) for r in results_multi
+    )
+    assert len(results_single) == 10
+
+
+def test_gitignore_filtering_python_backend(tmp_path):
+    """Files matched by .gitignore should be skipped when include_ignored=False."""
+    (tmp_path / ".gitignore").write_text("*.log\n__pycache__/\n")
+    (tmp_path / "app.py").write_text("hello")
+    (tmp_path / "debug.log").write_text("hello")
+    cache_dir = tmp_path / "__pycache__"
+    cache_dir.mkdir()
+    (cache_dir / "module.pyc").write_text("hello")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "hello",
+            search_within_files=True,
+            search_backend=SearchBackend.PYTHON,
+            include_ignored=False,
+        )
+    )
+    paths = {r.file_path for r in results}
+    assert str(tmp_path / "app.py") in paths
+    assert str(tmp_path / "debug.log") not in paths
+    assert not any("__pycache__" in p for p in paths)
+
+
+def test_include_ignored_true_returns_all(tmp_path):
+    """When include_ignored=True (default), gitignore patterns are not applied."""
+    (tmp_path / ".gitignore").write_text("*.log\n")
+    (tmp_path / "app.py").write_text("needle")
+    (tmp_path / "debug.log").write_text("needle")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "needle",
+            search_within_files=True,
+            search_backend=SearchBackend.PYTHON,
+            include_ignored=True,
+        )
+    )
+    paths = {r.file_path for r in results}
+    assert str(tmp_path / "app.py") in paths
+    assert str(tmp_path / "debug.log") in paths

@@ -21,6 +21,9 @@ FUZZY_FULL_THRESHOLD = 80.0
 FUZZY_EXACT_BONUS = 4.0  # boost for exact-substring containment
 FUZZY_WORD_BONUS = 2.0  # boost for whole-word boundary match
 
+# Parallel content search
+CONTENT_SEARCH_POOL_CHUNK_SIZE = 50
+
 # Result queue / UI update timing
 RESULT_BATCH_SIZE = 100
 PROCESS_RESULTS_TIME_BUDGET_S = 0.025  # 25 ms per QTimer tick (~1 frame budget)

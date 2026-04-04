@@ -14,6 +14,7 @@ class InventoryCacheKey:
     directory: str
     max_depth: int | None
     follow_symlinks: bool
+    include_ignored: bool
 
 
 @dataclass(frozen=True)

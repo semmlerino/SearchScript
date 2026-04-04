@@ -1,4 +1,5 @@
 import codecs
+import concurrent.futures
 import fnmatch
 import json
 import logging
@@ -25,8 +26,11 @@ try:
 except ImportError:
     RAPIDFUZZ_AVAILABLE = False
 
+import pathspec
+
 from .config import DirectoryError, FileAccessError, SearchError, ValidationError
 from .constants import (
+    CONTENT_SEARCH_POOL_CHUNK_SIZE,
     FUZZY_EXACT_BONUS,
     FUZZY_FULL_THRESHOLD,
     FUZZY_PARTIAL_THRESHOLD,
@@ -207,6 +211,7 @@ class SearchEngine:
         modified_before: datetime | None = None,
         match_folders: bool = False,
         follow_symlinks: bool = False,
+        include_ignored: bool = True,
         progress_callback=None,
         cancel_event=None,
         on_limit_reached: Callable[[int], None] | None = None,
@@ -257,6 +262,7 @@ class SearchEngine:
                 modified_after_ts=modified_after_ts,
                 modified_before_ts=modified_before_ts,
                 follow_symlinks=follow_symlinks,
+                include_ignored=include_ignored,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
                 on_limit_reached=on_limit_reached,
@@ -271,6 +277,7 @@ class SearchEngine:
             follow_symlinks=follow_symlinks,
             progress_callback=progress_callback,
             cancel_event=cancel_event,
+            include_ignored=include_ignored,
         )
         if inventory is None:
             return
@@ -306,45 +313,100 @@ class SearchEngine:
                                 on_limit_reached(max_results)
                             return
 
-            for entry in inventory.files:
-                if cancel_event and cancel_event.is_set():
-                    self.logger.info(f"Search cancelled. Files processed: {files_processed}")
-                    return
-
-                if not self._check_cached_inventory_filters(
-                    entry,
-                    include_types=include_types,
-                    exclude_types=exclude_types,
-                    search_within_files=search_within_files,
-                    min_size=min_size,
-                    max_size=max_size,
-                    modified_after_ts=modified_after_ts,
-                    modified_before_ts=modified_before_ts,
-                ):
+            if search_within_files:
+                # Collect filtered entries first
+                content_entries: list[InventoryEntry] = []
+                for entry in inventory.files:
+                    if cancel_event and cancel_event.is_set():
+                        self.logger.info(f"Search cancelled. Files processed: {files_processed}")
+                        return
+                    if not self._check_cached_inventory_filters(
+                        entry,
+                        include_types=include_types,
+                        exclude_types=exclude_types,
+                        search_within_files=search_within_files,
+                        min_size=min_size,
+                        max_size=max_size,
+                        modified_after_ts=modified_after_ts,
+                        modified_before_ts=modified_before_ts,
+                    ):
+                        files_processed += 1
+                        self._update_cached_inventory_progress(
+                            files_processed,
+                            len(inventory.files),
+                            progress_callback,
+                        )
+                        continue
+                    content_entries.append(entry)
                     files_processed += 1
                     self._update_cached_inventory_progress(
                         files_processed,
                         len(inventory.files),
                         progress_callback,
                     )
-                    continue
 
-                file_path = Path(entry.file_path)
-                try:
-                    if search_within_files:
-                        for result in self._search_file_content(
-                            file_path,
-                            match_plan,
-                            file_size=entry.file_size,
-                        ):
-                            result.mod_time = entry.mod_time
-                            yield result
-                            emitted_results += 1
-                            if max_results is not None and emitted_results >= max_results:
-                                if on_limit_reached:
-                                    on_limit_reached(max_results)
+                # Process in parallel chunks
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=self.max_workers
+                ) as executor:
+                    for chunk_start in range(
+                        0, len(content_entries), CONTENT_SEARCH_POOL_CHUNK_SIZE
+                    ):
+                        if cancel_event and cancel_event.is_set():
+                            return
+                        chunk = content_entries[
+                            chunk_start : chunk_start + CONTENT_SEARCH_POOL_CHUNK_SIZE
+                        ]
+                        future_to_entry = {
+                            executor.submit(
+                                lambda fp=Path(e.file_path), mp=match_plan, fs=e.file_size: list(
+                                    self._search_file_content(fp, mp, file_size=fs)
+                                )
+                            ): e
+                            for e in chunk
+                        }
+                        for future in concurrent.futures.as_completed(future_to_entry):
+                            if cancel_event and cancel_event.is_set():
                                 return
-                    else:
+                            entry = future_to_entry[future]
+                            try:
+                                results = future.result()
+                            except FileAccessError as exc:
+                                self.logger.warning(f"Skipping file due to access error: {exc}")
+                                continue
+                            for result in results:
+                                result.mod_time = entry.mod_time
+                                yield result
+                                emitted_results += 1
+                                if max_results is not None and emitted_results >= max_results:
+                                    if on_limit_reached:
+                                        on_limit_reached(max_results)
+                                    return
+            else:
+                for entry in inventory.files:
+                    if cancel_event and cancel_event.is_set():
+                        self.logger.info(f"Search cancelled. Files processed: {files_processed}")
+                        return
+
+                    if not self._check_cached_inventory_filters(
+                        entry,
+                        include_types=include_types,
+                        exclude_types=exclude_types,
+                        search_within_files=search_within_files,
+                        min_size=min_size,
+                        max_size=max_size,
+                        modified_after_ts=modified_after_ts,
+                        modified_before_ts=modified_before_ts,
+                    ):
+                        files_processed += 1
+                        self._update_cached_inventory_progress(
+                            files_processed,
+                            len(inventory.files),
+                            progress_callback,
+                        )
+                        continue
+
+                    try:
                         score = self._score_match(
                             entry.file_name,
                             match_plan,
@@ -366,16 +428,16 @@ class SearchEngine:
                                     if on_limit_reached:
                                         on_limit_reached(max_results)
                                     return
-                except FileAccessError as e:
-                    self.logger.warning(f"Skipping file due to access error: {e}")
-                    continue
+                    except FileAccessError as e:
+                        self.logger.warning(f"Skipping file due to access error: {e}")
+                        continue
 
-                files_processed += 1
-                self._update_cached_inventory_progress(
-                    files_processed,
-                    len(inventory.files),
-                    progress_callback,
-                )
+                    files_processed += 1
+                    self._update_cached_inventory_progress(
+                        files_processed,
+                        len(inventory.files),
+                        progress_callback,
+                    )
 
         except PermissionError as e:
             raise DirectoryError(f"Permission denied accessing directory: {directory}") from e
@@ -434,12 +496,14 @@ class SearchEngine:
         follow_symlinks: bool,
         progress_callback,
         cancel_event: threading.Event | None,
+        include_ignored: bool = True,
     ) -> InventorySnapshot | None:
         """Return a fresh or cached inventory snapshot for scan-based searches."""
         cache_key = InventoryCacheKey(
             directory=os.path.realpath(directory),
             max_depth=max_depth,
             follow_symlinks=follow_symlinks,
+            include_ignored=include_ignored,
         )
         root_mtime_ns = self._get_directory_mtime_ns(directory)
         stale_snapshot: InventorySnapshot | None = None
@@ -482,6 +546,7 @@ class SearchEngine:
                 directory=directory,
                 max_depth=max_depth,
                 follow_symlinks=follow_symlinks,
+                include_ignored=include_ignored,
             )
             return stale_snapshot
 
@@ -492,6 +557,7 @@ class SearchEngine:
             progress_callback=progress_callback,
             cancel_event=cancel_event,
             root_mtime_ns=root_mtime_ns,
+            include_ignored=include_ignored,
         )
         if snapshot is None:
             return None
@@ -540,6 +606,7 @@ class SearchEngine:
         directory: str,
         max_depth: int | None,
         follow_symlinks: bool,
+        include_ignored: bool = True,
     ) -> None:
         """Kick off a deduplicated background inventory refresh."""
         with self._inventory_refresh_lock:
@@ -554,6 +621,7 @@ class SearchEngine:
                 "directory": directory,
                 "max_depth": max_depth,
                 "follow_symlinks": follow_symlinks,
+                "include_ignored": include_ignored,
             },
             daemon=True,
         )
@@ -566,6 +634,7 @@ class SearchEngine:
         directory: str,
         max_depth: int | None,
         follow_symlinks: bool,
+        include_ignored: bool = True,
     ) -> None:
         """Rebuild a stale inventory snapshot without blocking the active search."""
         try:
@@ -577,6 +646,7 @@ class SearchEngine:
                 progress_callback=None,
                 cancel_event=None,
                 root_mtime_ns=self._get_directory_mtime_ns(directory),
+                include_ignored=include_ignored,
             )
             if snapshot is None:
                 return
@@ -596,6 +666,7 @@ class SearchEngine:
         progress_callback,
         cancel_event: threading.Event | None,
         root_mtime_ns: int | None,
+        include_ignored: bool = True,
     ) -> InventorySnapshot | None:
         """Build a file inventory for repeated scan-based searches."""
         if progress_callback:
@@ -609,6 +680,7 @@ class SearchEngine:
             max_depth,
             follow_symlinks,
             cancel_event,
+            include_ignored,
         ):
             if cancel_event and cancel_event.is_set():
                 return None
@@ -840,6 +912,21 @@ class SearchEngine:
             return False
         return modified_before_ts is None or mod_time <= modified_before_ts
 
+    def _detect_bom(self, file_path: Path) -> str | None:
+        """Read up to 4 bytes and return the encoding if a BOM is present, else None."""
+        try:
+            with open(file_path, "rb") as f:
+                raw = f.read(4)
+            if raw[:3] == codecs.BOM_UTF8:
+                return "utf-8-sig"
+            if raw[:4] in (codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE):
+                return "utf-32"
+            if raw[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
+                return "utf-16"
+        except OSError:
+            return None
+        return None
+
     def _detect_encoding(self, file_path: Path) -> str:
         """Detect file encoding using chardet if available, otherwise fall back to utf-8."""
         try:
@@ -896,8 +983,8 @@ class SearchEngine:
     ) -> Generator[SearchResult, None, None]:
         """Search small files using standard file reading."""
         try:
-            encoding = self._detect_encoding(file_path)
-            with open(file_path, encoding=encoding, errors="ignore") as f:
+            encoding = self._detect_bom(file_path) or "utf-8"
+            with open(file_path, encoding=encoding, errors="replace") as f:
                 lines = f.readlines()
             for i, line in enumerate(lines):
                 score = self._score_match(line, match_plan, allow_partial_fuzzy=True)
@@ -936,6 +1023,7 @@ class SearchEngine:
         modified_after_ts: float | None,
         modified_before_ts: float | None,
         follow_symlinks: bool,
+        include_ignored: bool = True,
         progress_callback=None,
         cancel_event: threading.Event | None = None,
         on_limit_reached: Callable[[int], None] | None = None,
@@ -951,6 +1039,7 @@ class SearchEngine:
             exclude_types=exclude_types,
             max_depth=max_depth,
             follow_symlinks=follow_symlinks,
+            include_ignored=include_ignored,
         )
         if progress_callback:
             progress_callback(f"Searching with ripgrep: {directory}")
@@ -989,6 +1078,7 @@ class SearchEngine:
                     else None
                 ),
                 follow_symlinks=follow_symlinks,
+                include_ignored=include_ignored,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
                 on_limit_reached=on_limit_reached,
@@ -1089,6 +1179,7 @@ class SearchEngine:
         exclude_types: list[str],
         max_depth: int | None,
         follow_symlinks: bool,
+        include_ignored: bool = True,
     ) -> list[str]:
         """Build a ripgrep command that preserves this app's file-selection semantics."""
         if self._rg_path is None:
@@ -1104,8 +1195,9 @@ class SearchEngine:
             "--glob-case-insensitive",
             "--threads",
             str(self.max_workers),
-            "-uu",
         ]
+        if include_ignored:
+            command.append("-uu")
         if follow_symlinks:
             command.append("-L")
         if max_depth is not None:
@@ -1201,7 +1293,7 @@ class SearchEngine:
             with open(file_path, "rb") as f:
                 try:
                     with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                        encoding = self._detect_encoding(file_path)
+                        encoding = self._detect_bom(file_path) or "utf-8"
                         line_no = 0
                         pos = 0
                         while pos < len(mm):
@@ -1276,8 +1368,11 @@ class SearchEngine:
         max_depth: int | None,
         follow_symlinks: bool,
         cancel_event: threading.Event | None,
+        include_ignored: bool = True,
         _current_depth: int = 0,
         _seen_realpaths: set[str] | None = None,
+        _gitignore_spec: "pathspec.PathSpec | None" = None,
+        _root_directory: str | None = None,
     ) -> Generator[tuple[str, os.DirEntry[str] | None], None, None]:
         """Walk directory tree using os.scandir for cached d_type (no extra stat on Linux).
 
@@ -1291,6 +1386,22 @@ class SearchEngine:
         if _seen_realpaths is None:
             _seen_realpaths = {os.path.realpath(directory)}
 
+        if _root_directory is None:
+            _root_directory = directory
+
+        if not include_ignored:
+            gitignore_path = os.path.join(directory, ".gitignore")
+            if os.path.isfile(gitignore_path):
+                try:
+                    with open(gitignore_path) as f:
+                        new_spec = pathspec.PathSpec.from_lines("gitignore", f)
+                    if _gitignore_spec is not None:
+                        _gitignore_spec = _gitignore_spec + new_spec
+                    else:
+                        _gitignore_spec = new_spec
+                except OSError:
+                    pass
+
         # Yield directory notification (entry=None signals "entering directory")
         yield (directory, None)
 
@@ -1301,6 +1412,13 @@ class SearchEngine:
                     if cancel_event and cancel_event.is_set():
                         return
                     try:
+                        if _gitignore_spec is not None:
+                            rel_path = os.path.relpath(entry.path, _root_directory)
+                            if entry.is_dir(follow_symlinks=follow_symlinks):
+                                if _gitignore_spec.match_file(rel_path + "/"):
+                                    continue
+                            elif _gitignore_spec.match_file(rel_path):
+                                continue
                         if entry.is_file(follow_symlinks=follow_symlinks):
                             yield (directory, entry)
                         elif entry.is_dir(follow_symlinks=follow_symlinks):
@@ -1322,6 +1440,9 @@ class SearchEngine:
                 max_depth,
                 follow_symlinks,
                 cancel_event,
+                include_ignored,
                 _current_depth + 1,
                 _seen_realpaths,
+                _gitignore_spec,
+                _root_directory,
             )
