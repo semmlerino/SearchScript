@@ -701,6 +701,17 @@ class SearchEngine:
             return None
         return None
 
+    @staticmethod
+    def _detect_bom_from_bytes(raw: bytes) -> str | None:
+        """Return the encoding if a BOM is present at the start of raw bytes, else None."""
+        if raw[:3] == codecs.BOM_UTF8:
+            return "utf-8-sig"
+        if raw[:4] in (codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE):
+            return "utf-32"
+        if raw[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
+            return "utf-16"
+        return None
+
     def _search_file_content(
         self,
         file_path: Path,
@@ -739,9 +750,10 @@ class SearchEngine:
     ) -> Generator[SearchResult, None, None]:
         """Search small files using standard file reading."""
         try:
-            encoding = self._detect_bom(file_path) or "utf-8"
-            with open(file_path, encoding=encoding, errors="replace") as f:
-                lines = f.readlines()
+            with open(file_path, "rb") as f:
+                raw = f.read()
+            encoding = self._detect_bom_from_bytes(raw) or "utf-8"
+            lines = raw.decode(encoding, errors="replace").splitlines(keepends=True)
             yielded = 0
             for i, line in enumerate(lines):
                 result_tuple = self._score_match(line, match_plan, allow_partial_fuzzy=True)
@@ -795,7 +807,7 @@ class SearchEngine:
             with open(file_path, "rb") as f:
                 try:
                     with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                        encoding = self._detect_bom(file_path) or "utf-8"
+                        encoding = self._detect_bom_from_bytes(bytes(mm[:4])) or "utf-8"
                         line_no = 0
                         pos = 0
                         yielded = 0
