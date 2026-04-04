@@ -1,6 +1,5 @@
 import queue
 import threading
-from datetime import datetime
 from time import monotonic
 from typing import Any
 
@@ -63,43 +62,12 @@ class SearchController:
         self.ui.refresh_requested.connect(self._refresh_search)
         self.ui.result_double_clicked.connect(self._open_file)
         self.ui.open_folder_requested.connect(self._open_containing_folder)
-        self.ui.clear_dates_btn.clicked.connect(self._clear_dates)
-
-    def _clear_dates(self) -> None:
-        """Reset date filter widgets to their minimum (no-filter) state."""
-        self.ui.modified_after_entry.setDate(self.ui.modified_after_entry.minimumDate())
-        self.ui.modified_before_entry.setDate(self.ui.modified_before_entry.minimumDate())
-
-    def _build_modified_date_filters(self) -> tuple[datetime | None, datetime | None]:
-        """Convert the date widgets into inclusive datetime bounds."""
-        min_date = self.ui.modified_after_entry.minimumDate()
-        after_qdate = self.ui.modified_after_entry.date()
-        modified_after = (
-            datetime(after_qdate.year(), after_qdate.month(), after_qdate.day())
-            if after_qdate != min_date
-            else None
-        )
-
-        before_qdate = self.ui.modified_before_entry.date()
-        modified_before = (
-            datetime(
-                before_qdate.year(),
-                before_qdate.month(),
-                before_qdate.day(),
-                23,
-                59,
-                59,
-                999999,
-            )
-            if before_qdate != min_date
-            else None
-        )
-        return modified_after, modified_before
+        self.ui.clear_dates_btn.clicked.connect(self.ui.clear_dates)
 
     def _start_search(self, search_params: dict[str, Any]):
         """Start the search operation."""
         self.logger.info(f"Starting search with parameters: {search_params}")
-        modified_after, modified_before = self._build_modified_date_filters()
+        modified_after, modified_before = self.ui.build_modified_date_filters()
         params = SearchParams(
             directory=search_params["directory"],
             search_term=search_params["search_term"],

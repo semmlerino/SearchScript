@@ -603,7 +603,7 @@ def test_controller_build_modified_date_filters_includes_full_day(qapp: QApplica
     controller.ui.modified_after_entry.setDate(QDate(2025, 1, 1))
     controller.ui.modified_before_entry.setDate(QDate(2025, 1, 1))
 
-    modified_after, modified_before = controller._build_modified_date_filters()  # pyright: ignore[reportPrivateUsage]
+    modified_after, modified_before = controller.ui.build_modified_date_filters()
 
     assert modified_after == datetime(2025, 1, 1, 0, 0, 0)
     assert modified_before == datetime(2025, 1, 1, 23, 59, 59, 999999)

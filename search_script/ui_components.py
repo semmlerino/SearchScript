@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime
 
 from PySide6.QtCore import QPoint, QSettings, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QColor, QKeySequence, QShortcut
@@ -33,6 +34,7 @@ from .models import RAPIDFUZZ_AVAILABLE, SearchResult
 
 SORT_ROLE = int(Qt.ItemDataRole.UserRole)
 RESULT_ROLE = SORT_ROLE + 1
+HIGHLIGHT_ROLE = RESULT_ROLE + 1
 
 
 class ResultTreeWidgetItem(QTreeWidgetItem):
@@ -514,10 +516,7 @@ class SearchUI(QMainWindow):
         if not item:
             return
         result = item.data(0, RESULT_ROLE) or {}  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
-        if isinstance(result, dict) and result.get("is_group"):  # pyright: ignore[reportUnknownMemberType]
-            file_path = result.get("file_path", item.text(0))  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
-        else:
-            file_path = result.get("file_path", item.text(0))  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        file_path = result.get("file_path", item.text(0))  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
         self.open_folder_requested.emit(file_path)  # pyright: ignore[reportUnknownArgumentType]
 
     def _copy_file_path(self) -> None:
@@ -706,7 +705,7 @@ class SearchUI(QMainWindow):
             item.setToolTip(1, tooltip)
         # Store highlight info for widget creation
         if result.match_start is not None and result.match_length and result.match_length > 0:
-            item.setData(1, SORT_ROLE + 1, (result.match_start, result.match_length))
+            item.setData(1, HIGHLIGHT_ROLE, (result.match_start, result.match_length))
         return item
 
     def _serialize_result(self, result: SearchResult) -> dict[str, str | int | float | None]:
@@ -727,7 +726,7 @@ class SearchUI(QMainWindow):
 
     def _apply_match_highlight(self, item: ResultTreeWidgetItem) -> None:
         """Apply HTML highlighting to the matching line column if match position is available."""
-        highlight_data = item.data(1, SORT_ROLE + 1)
+        highlight_data = item.data(1, HIGHLIGHT_ROLE)
         if highlight_data is None:
             return
         match_start, match_length = highlight_data
@@ -762,6 +761,37 @@ class SearchUI(QMainWindow):
     def show_error_message(self, title: str, message: str):
         """Show error message."""
         QMessageBox.critical(self, title, message)
+
+    def clear_dates(self) -> None:
+        """Reset date filter widgets to their minimum (no-filter) state."""
+        self.modified_after_entry.setDate(self.modified_after_entry.minimumDate())
+        self.modified_before_entry.setDate(self.modified_before_entry.minimumDate())
+
+    def build_modified_date_filters(self) -> tuple[datetime | None, datetime | None]:
+        """Convert the date widgets into inclusive datetime bounds."""
+        min_date = self.modified_after_entry.minimumDate()
+        after_qdate = self.modified_after_entry.date()
+        modified_after = (
+            datetime(after_qdate.year(), after_qdate.month(), after_qdate.day())
+            if after_qdate != min_date
+            else None
+        )
+
+        before_qdate = self.modified_before_entry.date()
+        modified_before = (
+            datetime(
+                before_qdate.year(),
+                before_qdate.month(),
+                before_qdate.day(),
+                23,
+                59,
+                59,
+                999999,
+            )
+            if before_qdate != min_date
+            else None
+        )
+        return modified_after, modified_before
 
     def export_results(self):
         """Export current results to JSON, CSV, or text."""

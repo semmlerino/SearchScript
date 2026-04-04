@@ -58,8 +58,7 @@ class FileOperations:
                 self.logger.info(f"Opened folder on macOS: {folder_path}")
             elif os.name == "nt":
                 file_path_norm = os.path.normpath(file_path)
-                command = f'explorer /select,"{file_path_norm}"'
-                subprocess.Popen(command, shell=True)
+                subprocess.Popen(["explorer", f"/select,{file_path_norm}"])
                 self.logger.info(
                     f"Executed Windows Explorer command to select file: {file_path_norm}"
                 )
