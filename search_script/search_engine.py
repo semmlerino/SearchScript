@@ -567,14 +567,6 @@ class SearchEngine:
             case_sensitive=case_sensitive,
         )
 
-    def _is_likely_binary(self, file_path: Path) -> bool:
-        """Return True if the file appears to be binary (contains null bytes in the first 8 KB)."""
-        try:
-            with open(file_path, "rb") as f:
-                return b"\x00" in f.read(8192)
-        except OSError:
-            return True
-
     def _should_process_file(
         self,
         file_lower: str,
@@ -684,21 +676,6 @@ class SearchEngine:
                 score += FUZZY_WORD_BONUS
 
         return score if score >= threshold else None
-
-    def _detect_bom(self, file_path: Path) -> str | None:
-        """Read up to 4 bytes and return the encoding if a BOM is present, else None."""
-        try:
-            with open(file_path, "rb") as f:
-                raw = f.read(4)
-            if raw[:3] == codecs.BOM_UTF8:
-                return "utf-8-sig"
-            if raw[:4] in (codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE):
-                return "utf-32"
-            if raw[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
-                return "utf-16"
-        except OSError:
-            return None
-        return None
 
     @staticmethod
     def _detect_bom_from_bytes(raw: bytes) -> str | None:
