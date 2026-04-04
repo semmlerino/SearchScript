@@ -260,7 +260,7 @@ class RipgrepBackend:
             str(self.max_workers),
         ]
         if include_ignored:
-            command.append("-uu")
+            command.append("--no-ignore")
         if follow_symlinks:
             command.append("-L")
         if max_depth is not None:
@@ -473,7 +473,7 @@ class RipgrepBackend:
             str(self.max_workers),
         ]
         if include_ignored:
-            command.append("-uu")
+            command.append("--no-ignore")
         if follow_symlinks:
             command.append("-L")
         if max_depth is not None:
