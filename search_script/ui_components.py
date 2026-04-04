@@ -5,8 +5,8 @@ import logging
 import os
 import re
 
-from PySide6.QtCore import QSettings, Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QPoint, QSettings, Qt, Signal
+from PySide6.QtGui import QCloseEvent, QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -39,7 +39,7 @@ class ResultTreeWidgetItem(QTreeWidgetItem):
 
     def __lt__(self, other: QTreeWidgetItem) -> bool:
         tree = self.treeWidget()
-        column = tree.sortColumn() if tree is not None else 0
+        column = tree.sortColumn() if tree is not None else 0  # pyright: ignore[reportUnnecessaryComparison]
         left = self.data(column, SORT_ROLE)
         right = other.data(column, SORT_ROLE)
         if left is not None and right is not None:
@@ -73,7 +73,7 @@ class SearchUI(QMainWindow):
         if isinstance(last_search, str):
             self.search_entry.setText(last_search)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         """Save user settings on close."""
         settings = QSettings("SearchScript", "EnhancedFileSearch")
         settings.setValue("last_directory", self.dir_entry.text())
@@ -303,7 +303,7 @@ class SearchUI(QMainWindow):
 
         # Context menu
         self.results_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.results_tree.customContextMenuRequested.connect(self._show_context_menu)
+        self.results_tree.customContextMenuRequested.connect(self._show_context_menu)  # pyright: ignore[reportUnknownMemberType,reportArgumentType]
 
         self._file_group_items: dict[str, ResultTreeWidgetItem] = {}
 
@@ -416,38 +416,38 @@ class SearchUI(QMainWindow):
         result = item.data(0, RESULT_ROLE)
         if result is None:
             return
-        if isinstance(result, dict) and result.get("is_group"):
+        if isinstance(result, dict) and result.get("is_group"):  # pyright: ignore[reportUnknownMemberType]
             item.setExpanded(not item.isExpanded())
             return
         self.result_double_clicked.emit(result)
 
-    def _show_context_menu(self, pos):
+    def _show_context_menu(self, pos: QPoint) -> None:
         """Show context menu on right-click."""
-        item = self.results_tree.itemAt(pos)
+        item = self.results_tree.itemAt(pos)  # pyright: ignore[reportUnknownMemberType,reportArgumentType]
         if not item:
             return
         self.results_tree.setCurrentItem(item)
         menu = QMenu(self)
-        result = item.data(0, RESULT_ROLE)
-        if isinstance(result, dict) and result.get("is_group"):
+        result = item.data(0, RESULT_ROLE)  # pyright: ignore[reportUnknownMemberType]
+        if isinstance(result, dict) and result.get("is_group"):  # pyright: ignore[reportUnknownMemberType]
             toggle_text = "Collapse" if item.isExpanded() else "Expand"
             toggle_action = menu.addAction(toggle_text)
             toggle_action.triggered.connect(lambda: item.setExpanded(not item.isExpanded()))
         open_action = menu.addAction("Open Containing Folder")
         open_action.triggered.connect(self._on_open_containing_folder)
-        menu.exec(self.results_tree.viewport().mapToGlobal(pos))
+        menu.exec(self.results_tree.viewport().mapToGlobal(pos))  # pyright: ignore[reportUnknownArgumentType,reportArgumentType]
 
     def _on_open_containing_folder(self):
         """Handle open containing folder menu item."""
         item = self.results_tree.currentItem()
         if not item:
             return
-        result = item.data(0, RESULT_ROLE) or {}
-        if isinstance(result, dict) and result.get("is_group"):
-            file_path = result.get("file_path", item.text(0))
+        result = item.data(0, RESULT_ROLE) or {}  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        if isinstance(result, dict) and result.get("is_group"):  # pyright: ignore[reportUnknownMemberType]
+            file_path = result.get("file_path", item.text(0))  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
         else:
-            file_path = result.get("file_path", item.text(0))
-        self.open_folder_requested.emit(file_path)
+            file_path = result.get("file_path", item.text(0))  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        self.open_folder_requested.emit(file_path)  # pyright: ignore[reportUnknownArgumentType]
 
     def _apply_preset(self, preset: str):
         """Apply a file type preset."""
@@ -660,7 +660,7 @@ class SearchUI(QMainWindow):
                 # Grouped parent — export children that have result metadata
                 for j in range(item.childCount()):
                     child = item.child(j)
-                    if child is not None:
+                    if child is not None:  # pyright: ignore[reportUnnecessaryComparison]
                         metadata = child.data(0, RESULT_ROLE)
                         if metadata:
                             rows.append(metadata)
@@ -730,11 +730,11 @@ class SearchUI(QMainWindow):
                 file_paths.add(item.text(0))
                 for j in range(item.childCount()):
                     child = item.child(j)
-                    if child is not None and child.data(0, RESULT_ROLE) is not None:
+                    if child is not None and child.data(0, RESULT_ROLE) is not None:  # pyright: ignore[reportUnnecessaryComparison]
                         match_count += 1
             else:
                 # Flat item
                 match_count += 1
-                metadata = item.data(0, RESULT_ROLE) or {}
-                file_paths.add(str(metadata.get("file_path", item.text(0))))
+                metadata = item.data(0, RESULT_ROLE) or {}  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+                file_paths.add(str(metadata.get("file_path", item.text(0))))  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
         return match_count, len(file_paths)

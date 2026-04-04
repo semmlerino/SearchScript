@@ -6,14 +6,15 @@ import queue
 import shutil
 import sqlite3
 from datetime import datetime, timedelta
+from pathlib import Path
 from time import monotonic, sleep
-from typing import cast
+from typing import Any, cast
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QDate, Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
 
 from search_script.config import ValidationError
 from search_script.file_utils import FileOperations
@@ -35,7 +36,7 @@ def qapp():
     gc.collect()
 
 
-def close_widget(widget) -> None:
+def close_widget(widget: QWidget) -> None:
     widget.close()
     widget.deleteLater()
     app = QApplication.instance()
@@ -43,7 +44,7 @@ def close_widget(widget) -> None:
         app.processEvents()
 
 
-def test_filename_search(tmp_path):
+def test_filename_search(tmp_path: Path):
     test_file1 = tmp_path / "test1.txt"
     test_file2 = tmp_path / "test2.py"
     test_file3 = tmp_path / "other.log"
@@ -60,7 +61,7 @@ def test_filename_search(tmp_path):
     assert str(test_file2) in paths
 
 
-def test_content_search(tmp_path):
+def test_content_search(tmp_path: Path):
     test_file = tmp_path / "test.txt"
     test_file.write_text("Hello world\nThis is a test file\nPython search")
 
@@ -80,7 +81,7 @@ def test_content_search(tmp_path):
         (SearchMode.GLOB, "Hello"),
     ],
 )
-def test_large_file_content_search_python_backend(tmp_path, mode, term):
+def test_large_file_content_search_python_backend(tmp_path: Path, mode: SearchMode, term: str):
     test_file = tmp_path / "big.txt"
     test_file.write_text(("Hello World " * 12 + "\n") * 8000, encoding="utf-8")
 
@@ -100,7 +101,7 @@ def test_large_file_content_search_python_backend(tmp_path, mode, term):
     assert results[0].line_content == ("Hello World " * 12).strip()
 
 
-def test_content_search_with_type_filter(tmp_path):
+def test_content_search_with_type_filter(tmp_path: Path):
     (tmp_path / "code.py").write_text("def search_function(): pass")
     (tmp_path / "notes.txt").write_text("search notes here")
 
@@ -115,7 +116,7 @@ def test_content_search_with_type_filter(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep unavailable")
-def test_ripgrep_glob_backend_matches_content(tmp_path):
+def test_ripgrep_glob_backend_matches_content(tmp_path: Path):
     test_file = tmp_path / "test.txt"
     test_file.write_text("Hello there\nGeneral Kenobi", encoding="utf-8")
 
@@ -135,7 +136,7 @@ def test_ripgrep_glob_backend_matches_content(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep unavailable")
-def test_ripgrep_backend_respects_modified_date_filter(tmp_path):
+def test_ripgrep_backend_respects_modified_date_filter(tmp_path: Path):
     old_file = tmp_path / "old.txt"
     new_file = tmp_path / "new.txt"
     old_file.write_text("needle")
@@ -170,7 +171,7 @@ def test_file_modification_time():
     assert mod_time == "N/A"
 
 
-def test_invalid_regex_raises_validation_error(tmp_path):
+def test_invalid_regex_raises_validation_error(tmp_path: Path):
     test_file = tmp_path / "test.txt"
     test_file.write_text("hello", encoding="utf-8")
 
@@ -186,7 +187,7 @@ def test_invalid_regex_raises_validation_error(tmp_path):
         )
 
 
-def test_fuzzy_filename_search(tmp_path):
+def test_fuzzy_filename_search(tmp_path: Path):
     (tmp_path / "configuration.txt").write_text("data")
     (tmp_path / "readme.md").write_text("info")
 
@@ -201,7 +202,7 @@ def test_fuzzy_filename_search(tmp_path):
     assert "configuration" in results[0].file_path
 
 
-def test_fuzzy_filename_search_ranks_relevant_matches(tmp_path):
+def test_fuzzy_filename_search_ranks_relevant_matches(tmp_path: Path):
     (tmp_path / "configuration.txt").write_text("data")
     (tmp_path / "congratulation.txt").write_text("data")
     (tmp_path / "readme.md").write_text("data")
@@ -221,7 +222,7 @@ def test_fuzzy_filename_search_ranks_relevant_matches(tmp_path):
     assert all("readme" not in result.file_path for result in results)
 
 
-def test_fuzzy_content_search(tmp_path):
+def test_fuzzy_content_search(tmp_path: Path):
     test_file = tmp_path / "notes.txt"
     test_file.write_text("authentication module\nlogging setup\ndata pipeline")
 
@@ -235,7 +236,7 @@ def test_fuzzy_content_search(tmp_path):
     assert results[0].line_number == 1
 
 
-def test_filename_search_binary_extension(tmp_path):
+def test_filename_search_binary_extension(tmp_path: Path):
     exr_file = tmp_path / "render.exr"
     exr_file.write_bytes(b"\x00" * 10)
     engine = SearchEngine()
@@ -244,15 +245,15 @@ def test_filename_search_binary_extension(tmp_path):
     assert results[0].file_path.endswith(".exr")
 
 
-def test_search_engine_reuses_inventory_cache(tmp_path, monkeypatch):
+def test_search_engine_reuses_inventory_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     for index in range(3):
         (tmp_path / f"file{index}.txt").write_text("hello", encoding="utf-8")
 
     engine = SearchEngine()
     build_calls = 0
-    original = engine._build_inventory_snapshot
+    original = engine._build_inventory_snapshot  # pyright: ignore[reportPrivateUsage]
 
-    def wrapped(*args, **kwargs):
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
         nonlocal build_calls
         build_calls += 1
         return original(*args, **kwargs)
@@ -265,7 +266,9 @@ def test_search_engine_reuses_inventory_cache(tmp_path, monkeypatch):
     assert build_calls == 1
 
 
-def test_search_engine_uses_persistent_index_between_instances(tmp_path, monkeypatch):
+def test_search_engine_uses_persistent_index_between_instances(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     search_root = tmp_path / "search_root"
     search_root.mkdir()
     index_db = tmp_path / "inventory.sqlite3"
@@ -280,7 +283,7 @@ def test_search_engine_uses_persistent_index_between_instances(tmp_path, monkeyp
 
     second_engine = SearchEngine(index_db_path=index_db)
 
-    def fail_build(*args, **kwargs):
+    def fail_build(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("persistent index should avoid rebuilding inventory")
 
     monkeypatch.setattr(second_engine, "_build_inventory_snapshot", fail_build)
@@ -291,7 +294,7 @@ def test_search_engine_uses_persistent_index_between_instances(tmp_path, monkeyp
     assert len(second_results) == 3
 
 
-def test_search_engine_refreshes_stale_persistent_index_in_background(tmp_path):
+def test_search_engine_refreshes_stale_persistent_index_in_background(tmp_path: Path):
     search_root = tmp_path / "search_root"
     search_root.mkdir()
     index_db = tmp_path / "inventory.sqlite3"
@@ -326,13 +329,13 @@ def test_search_engine_refreshes_stale_persistent_index_in_background(tmp_path):
 
     deadline = monotonic() + 2.0
     while monotonic() < deadline:
-        with second_engine._inventory_refresh_lock:
-            if not second_engine._inventory_refreshes:
+        with second_engine._inventory_refresh_lock:  # pyright: ignore[reportPrivateUsage]
+            if not second_engine._inventory_refreshes:  # pyright: ignore[reportPrivateUsage]
                 break
         sleep(0.05)
 
-    with second_engine._inventory_refresh_lock:
-        assert not second_engine._inventory_refreshes
+    with second_engine._inventory_refresh_lock:  # pyright: ignore[reportPrivateUsage]
+        assert not second_engine._inventory_refreshes  # pyright: ignore[reportPrivateUsage]
 
     third_engine = SearchEngine(index_db_path=index_db)
     fresh_results = list(
@@ -344,7 +347,7 @@ def test_search_engine_refreshes_stale_persistent_index_in_background(tmp_path):
     assert second_engine.BACKGROUND_REFRESH_STATUS in statuses
 
 
-def test_include_ignored_cache_key_separation(tmp_path):
+def test_include_ignored_cache_key_separation(tmp_path: Path):
     """Snapshots with include_ignored=True and False must not collide in the index."""
     from time import time as _time
 
@@ -401,7 +404,7 @@ def test_include_ignored_cache_key_separation(tmp_path):
     assert len(result_excluded.snapshot.files) == 0
 
 
-def test_filename_search_honors_max_results(tmp_path):
+def test_filename_search_honors_max_results(tmp_path: Path):
     for index in range(5):
         (tmp_path / f"target_{index}.txt").write_text("hello", encoding="utf-8")
 
@@ -418,7 +421,7 @@ def test_filename_search_honors_max_results(tmp_path):
     assert len(results) == 2
 
 
-def test_search_results_carry_mod_time(tmp_path):
+def test_search_results_carry_mod_time(tmp_path: Path):
     test_file = tmp_path / "test.txt"
     test_file.write_text("hello")
     engine = SearchEngine()
@@ -427,7 +430,7 @@ def test_search_results_carry_mod_time(tmp_path):
     assert results[0].formatted_mod_time != "N/A"
 
 
-def test_utf16_content_search_python_backend(tmp_path):
+def test_utf16_content_search_python_backend(tmp_path: Path):
     test_file = tmp_path / "notes.txt"
     test_file.write_text("needle here\n", encoding="utf-16")
 
@@ -446,7 +449,7 @@ def test_utf16_content_search_python_backend(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep unavailable")
-def test_ripgrep_search_honors_max_results(tmp_path):
+def test_ripgrep_search_honors_max_results(tmp_path: Path):
     for index in range(4):
         (tmp_path / f"note_{index}.txt").write_text("needle\nneedle\n", encoding="utf-8")
 
@@ -464,12 +467,12 @@ def test_ripgrep_search_honors_max_results(tmp_path):
     assert len(results) == 3
 
 
-def test_ripgrep_backend_falls_back_to_python_when_unavailable(tmp_path):
+def test_ripgrep_backend_falls_back_to_python_when_unavailable(tmp_path: Path):
     test_file = tmp_path / "notes.txt"
     test_file.write_text("needle")
 
     engine = SearchEngine()
-    engine._rg_path = None
+    engine._rg_path = None  # pyright: ignore[reportPrivateUsage]
     results = list(
         engine.search_files(
             str(tmp_path),
@@ -483,7 +486,7 @@ def test_ripgrep_backend_falls_back_to_python_when_unavailable(tmp_path):
     assert results[0].file_path == str(test_file)
 
 
-def test_symlink_cycle_detection(tmp_path):
+def test_symlink_cycle_detection(tmp_path: Path):
     subdir = tmp_path / "sub"
     subdir.mkdir()
     (subdir / "file.txt").write_text("content")
@@ -495,14 +498,14 @@ def test_symlink_cycle_detection(tmp_path):
     assert len(results) == 1
 
 
-def test_controller_drain_remaining_results(qapp):
+def test_controller_drain_remaining_results(qapp: QApplication):
     controller = SearchController()
     controller.result_queue = queue.Queue()
     result = SearchResult("/tmp/a.txt", 3, "hello", None, mod_time=1.0, file_size=12)
     controller.result_queue.put(("result", result))
     controller.result_queue.put(("done", 1))
 
-    sentinel = controller._drain_remaining_results()
+    sentinel = controller._drain_remaining_results()  # pyright: ignore[reportPrivateUsage]
 
     assert sentinel == ("done", 1)
     # Content results are now grouped: 1 parent file item with 1 child match
@@ -518,15 +521,15 @@ def test_controller_drain_remaining_results(qapp):
     close_widget(controller.ui)
 
 
-def test_controller_search_worker_batches_results(qapp):
+def test_controller_search_worker_batches_results(qapp: QApplication):
     controller = SearchController()
 
-    def fake_search_files(**kwargs):
+    def fake_search_files(**kwargs: Any) -> Any:
         yield SearchResult("/tmp/a.txt", 1, "alpha", None, mod_time=1.0, file_size=1)
         yield SearchResult("/tmp/b.txt", 2, "beta", None, mod_time=2.0, file_size=2)
 
     controller.search_engine.search_files = fake_search_files  # type: ignore[method-assign]
-    controller._search_worker(
+    controller._search_worker(  # pyright: ignore[reportPrivateUsage]
         {
             "directory": ".",
             "search_term": "x",
@@ -549,16 +552,16 @@ def test_controller_search_worker_batches_results(qapp):
     msg_type, batch = controller.result_queue.get_nowait()
     assert msg_type == "results_batch"
     assert isinstance(batch, list)
-    assert len(batch) == 2
+    assert len(batch) == 2  # pyright: ignore[reportUnknownArgumentType]
     assert controller.result_queue.get_nowait() == ("done", 2)
     close_widget(controller.ui)
 
 
-def test_controller_search_worker_forwards_backend_and_dates(qapp):
+def test_controller_search_worker_forwards_backend_and_dates(qapp: QApplication):
     controller = SearchController()
     captured: dict[str, object] = {}
 
-    def fake_search_files(**kwargs):
+    def fake_search_files(**kwargs: Any) -> Any:
         captured.update(kwargs)
         return iter(())
 
@@ -567,7 +570,7 @@ def test_controller_search_worker_forwards_backend_and_dates(qapp):
     modified_before = datetime(2025, 12, 31)
     max_results = 250
 
-    controller._search_worker(
+    controller._search_worker(  # pyright: ignore[reportPrivateUsage]
         {
             "directory": ".",
             "search_term": "x",
@@ -594,19 +597,19 @@ def test_controller_search_worker_forwards_backend_and_dates(qapp):
     close_widget(controller.ui)
 
 
-def test_controller_build_modified_date_filters_includes_full_day(qapp):
+def test_controller_build_modified_date_filters_includes_full_day(qapp: QApplication):
     controller = SearchController()
     controller.ui.modified_after_entry.setDate(QDate(2025, 1, 1))
     controller.ui.modified_before_entry.setDate(QDate(2025, 1, 1))
 
-    modified_after, modified_before = controller._build_modified_date_filters()
+    modified_after, modified_before = controller._build_modified_date_filters()  # pyright: ignore[reportPrivateUsage]
 
     assert modified_after == datetime(2025, 1, 1, 0, 0, 0)
     assert modified_before == datetime(2025, 1, 1, 23, 59, 59, 999999)
     close_widget(controller.ui)
 
 
-def test_ui_rejects_invalid_numeric_filter(qapp, monkeypatch):
+def test_ui_rejects_invalid_numeric_filter(qapp: QApplication, monkeypatch: pytest.MonkeyPatch):
     messages: list[str] = []
     ui = SearchUI()
     ui.dir_entry.setText(os.getcwd())
@@ -614,15 +617,15 @@ def test_ui_rejects_invalid_numeric_filter(qapp, monkeypatch):
     ui.min_size_entry.setText("abc")
     monkeypatch.setattr(
         "search_script.ui_components.QMessageBox.warning",
-        lambda *args: messages.append(str(args[-1])),
+        lambda *args: messages.append(str(args[-1])),  # pyright: ignore[reportUnknownLambdaType,reportUnknownArgumentType,reportUnknownMemberType]
     )
 
-    assert not ui._validate_inputs()
+    assert not ui._validate_inputs()  # pyright: ignore[reportPrivateUsage]
     assert messages
     close_widget(ui)
 
 
-def test_ui_rejects_non_positive_max_results(qapp, monkeypatch):
+def test_ui_rejects_non_positive_max_results(qapp: QApplication, monkeypatch: pytest.MonkeyPatch):
     messages: list[str] = []
     ui = SearchUI()
     ui.dir_entry.setText(os.getcwd())
@@ -630,15 +633,15 @@ def test_ui_rejects_non_positive_max_results(qapp, monkeypatch):
     ui.max_results_entry.setText("0")
     monkeypatch.setattr(
         "search_script.ui_components.QMessageBox.warning",
-        lambda *args: messages.append(str(args[-1])),
+        lambda *args: messages.append(str(args[-1])),  # pyright: ignore[reportUnknownLambdaType,reportUnknownArgumentType,reportUnknownMemberType]
     )
 
-    assert not ui._validate_inputs()
+    assert not ui._validate_inputs()  # pyright: ignore[reportPrivateUsage]
     assert any("greater than zero" in message for message in messages)
     close_widget(ui)
 
 
-def test_controller_reports_result_limit_in_completion_status(qapp):
+def test_controller_reports_result_limit_in_completion_status(qapp: QApplication):
     controller = SearchController()
     controller.search_was_truncated = True
     controller.search_result_limit = 2
@@ -649,13 +652,13 @@ def test_controller_reports_result_limit_in_completion_status(qapp):
         ]
     )
 
-    controller._handle_search_complete()
+    controller._handle_search_complete()  # pyright: ignore[reportPrivateUsage]
 
     assert "limit 2" in controller.ui.status_label.text()
     close_widget(controller.ui)
 
 
-def test_results_tree_sorts_size_numerically(qapp):
+def test_results_tree_sorts_size_numerically(qapp: QApplication):
     ui = SearchUI()
     ui.add_results_batch(
         [
@@ -670,13 +673,13 @@ def test_results_tree_sorts_size_numerically(qapp):
     for i in range(ui.results_tree.topLevelItemCount()):
         item = ui.results_tree.topLevelItem(i)
         assert item is not None
-        sizes.append(item.text(2))
+        sizes.append(item.text(2))  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
 
     assert sizes == ["10 B", "2.0 KB", "100.0 MB"]
     close_widget(ui)
 
 
-def test_on_limit_reached_callback_invoked(tmp_path):
+def test_on_limit_reached_callback_invoked(tmp_path: Path):
     """on_limit_reached must be called with the limit when results are truncated."""
     for i in range(5):
         (tmp_path / f"target_{i}.txt").write_text("hello", encoding="utf-8")
@@ -697,7 +700,9 @@ def test_on_limit_reached_callback_invoked(tmp_path):
     assert called_with == [2]
 
 
-def test_export_results_permission_error_shows_dialog(qapp, tmp_path, monkeypatch):
+def test_export_results_permission_error_shows_dialog(
+    qapp: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     """export_results must show QMessageBox.critical on OSError, not crash silently."""
     import builtins
 
@@ -706,34 +711,34 @@ def test_export_results_permission_error_shows_dialog(qapp, tmp_path, monkeypatc
         # Patch dialog to return a fake path
         monkeypatch.setattr(
             "search_script.ui_components.QFileDialog.getSaveFileName",
-            lambda *args, **kwargs: ("/fake/path/results.json", "JSON (*.json)"),
+            lambda *args, **kwargs: ("/fake/path/results.json", "JSON (*.json)"),  # pyright: ignore[reportUnknownLambdaType,reportUnknownArgumentType]
         )
         # Patch open to raise PermissionError
         real_open = builtins.open
 
-        def mock_open(path, *args, **kwargs):
+        def mock_open(path: Any, *args: Any, **kwargs: Any) -> Any:
             if "results.json" in str(path):
                 raise PermissionError("Permission denied")
-            return real_open(path, *args, **kwargs)
+            return real_open(path, *args, **kwargs)  # pyright: ignore[reportUnknownVariableType]
 
         monkeypatch.setattr(builtins, "open", mock_open)
 
         # Track QMessageBox.critical calls
-        critical_calls: list[tuple] = []
+        critical_calls: list[tuple[Any, ...]] = []
         monkeypatch.setattr(
             "search_script.ui_components.QMessageBox.critical",
-            lambda *args, **kwargs: critical_calls.append(args),
+            lambda *args, **kwargs: critical_calls.append(args),  # pyright: ignore[reportUnknownLambdaType,reportUnknownArgumentType,reportUnknownMemberType]
         )
 
         ui.export_results()
 
         assert len(critical_calls) == 1, "QMessageBox.critical should be called once on error"
-        assert "Export Failed" in critical_calls[0][1]
+        assert "Export Failed" in critical_calls[0][1]  # pyright: ignore[reportArgumentType]
     finally:
         close_widget(ui)
 
 
-def test_search_small_file_attribute_error_propagates(tmp_path):
+def test_search_small_file_attribute_error_propagates(tmp_path: Path):
     """AttributeError inside _search_small_file must propagate as SearchError,
     not be silently swallowed as FileAccessError."""
     from search_script.config import SearchError
@@ -743,10 +748,10 @@ def test_search_small_file_attribute_error_propagates(tmp_path):
 
     engine = SearchEngine()
 
-    def raise_attribute_error(*args, **kwargs):
+    def raise_attribute_error(*args: Any, **kwargs: Any) -> Any:
         raise AttributeError("simulated programming error")
 
-    engine._search_small_file = raise_attribute_error  # pyright: ignore[reportAttributeAccessIssue]
+    engine._search_small_file = raise_attribute_error  # pyright: ignore[reportAttributeAccessIssue,reportPrivateUsage]
 
     with pytest.raises(SearchError):
         list(
@@ -759,7 +764,7 @@ def test_search_small_file_attribute_error_propagates(tmp_path):
         )
 
 
-def test_bom_detection_utf16(tmp_path):
+def test_bom_detection_utf16(tmp_path: Path):
     """BOM detection must find UTF-16 content without relying on chardet."""
     test_file = tmp_path / "bom_test.txt"
     test_file.write_text("needle here\n", encoding="utf-16")
@@ -778,7 +783,7 @@ def test_bom_detection_utf16(tmp_path):
     assert results[0].line_content == "needle here"
 
 
-def test_threaded_content_search_correctness(tmp_path):
+def test_threaded_content_search_correctness(tmp_path: Path):
     """Parallel content search with 1 and 4 workers must return the same result set."""
     for i in range(10):
         f = tmp_path / f"file_{i:02d}.txt"
@@ -811,7 +816,7 @@ def test_threaded_content_search_correctness(tmp_path):
     assert len(results_single) == 10
 
 
-def test_gitignore_filtering_python_backend(tmp_path):
+def test_gitignore_filtering_python_backend(tmp_path: Path):
     """Files matched by .gitignore should be skipped when include_ignored=False."""
     (tmp_path / ".gitignore").write_text("*.log\n__pycache__/\n")
     (tmp_path / "app.py").write_text("hello")
@@ -836,7 +841,7 @@ def test_gitignore_filtering_python_backend(tmp_path):
     assert not any("__pycache__" in p for p in paths)
 
 
-def test_include_ignored_true_returns_all(tmp_path):
+def test_include_ignored_true_returns_all(tmp_path: Path):
     """When include_ignored=True (default), gitignore patterns are not applied."""
     (tmp_path / ".gitignore").write_text("*.log\n")
     (tmp_path / "app.py").write_text("needle")
@@ -857,7 +862,7 @@ def test_include_ignored_true_returns_all(tmp_path):
     assert str(tmp_path / "debug.log") in paths
 
 
-def test_nested_gitignore_anchored_patterns(tmp_path):
+def test_nested_gitignore_anchored_patterns(tmp_path: Path):
     """Anchored patterns in nested .gitignore files apply only relative to that file's directory."""
     # Root .gitignore — ignores *.log everywhere
     (tmp_path / ".gitignore").write_text("*.log\n")
@@ -881,7 +886,7 @@ def test_nested_gitignore_anchored_patterns(tmp_path):
     # Call _walk_scandir directly to test gitignore logic without going through
     # the inventory snapshot path (which has a separate pre-existing bug).
     walked = list(
-        engine._walk_scandir(
+        engine._walk_scandir(  # pyright: ignore[reportPrivateUsage]
             str(tmp_path),
             max_depth=None,
             follow_symlinks=False,
@@ -906,7 +911,7 @@ def test_nested_gitignore_anchored_patterns(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_content_results_grouped_by_file(qapp):
+def test_content_results_grouped_by_file(qapp: QApplication):
     """Content search results should be grouped under parent file items."""
     ui = SearchUI()
     ui.add_results_batch(
@@ -926,8 +931,8 @@ def test_content_results_grouped_by_file(qapp):
         parents[item.text(0)] = item
     assert "/tmp/a.txt" in parents
     assert "/tmp/b.txt" in parents
-    assert parents["/tmp/a.txt"].childCount() == 2
-    assert parents["/tmp/b.txt"].childCount() == 1
+    assert parents["/tmp/a.txt"].childCount() == 2  # pyright: ignore[reportUnknownMemberType]
+    assert parents["/tmp/b.txt"].childCount() == 1  # pyright: ignore[reportUnknownMemberType]
     # get_result_summary should count 3 matches, 2 files
     matches, files = ui.get_result_summary()
     assert matches == 3
@@ -935,7 +940,7 @@ def test_content_results_grouped_by_file(qapp):
     close_widget(ui)
 
 
-def test_filename_results_remain_flat(qapp):
+def test_filename_results_remain_flat(qapp: QApplication):
     """Filename search results (no line_number) should stay flat."""
     ui = SearchUI()
     ui.add_results_batch(
@@ -954,7 +959,7 @@ def test_filename_results_remain_flat(qapp):
 # ---------------------------------------------------------------------------
 
 
-def test_context_lines_python_backend(tmp_path):
+def test_context_lines_python_backend(tmp_path: Path):
     """Context lines should be captured when context_lines > 0."""
     test_file = tmp_path / "test.txt"
     test_file.write_text("line1\nline2\nneedle here\nline4\nline5\n")
@@ -979,7 +984,7 @@ def test_context_lines_python_backend(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_match_position_substring(tmp_path):
+def test_match_position_substring(tmp_path: Path):
     """Substring search should report match start and length."""
     test_file = tmp_path / "test.txt"
     test_file.write_text("Hello World")
@@ -998,7 +1003,7 @@ def test_match_position_substring(tmp_path):
     assert results[0].match_length == 5
 
 
-def test_match_position_regex(tmp_path):
+def test_match_position_regex(tmp_path: Path):
     """Regex search should report match start and length."""
     test_file = tmp_path / "test.txt"
     test_file.write_text("foo bar123 baz")
@@ -1023,7 +1028,7 @@ def test_match_position_regex(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_filename_search_progress_count(tmp_path):
+def test_filename_search_progress_count(tmp_path: Path):
     """Progress counter must include files that raise FileAccessError (no under-count)."""
     # Create 200 files so the modulo-100 progress callback actually fires
     for i in range(200):
@@ -1045,7 +1050,7 @@ def test_filename_search_progress_count(tmp_path):
     )
 
 
-def test_mmap_context_after_multiple_lines(tmp_path, monkeypatch):
+def test_mmap_context_after_multiple_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """mmap path should return multiple context_after lines, not just one."""
     from search_script import search_engine as se_mod
 
@@ -1073,7 +1078,7 @@ def test_mmap_context_after_multiple_lines(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep unavailable")
-def test_ripgrep_context_lines(tmp_path):
+def test_ripgrep_context_lines(tmp_path: Path):
     """Ripgrep backend should populate context_before and context_after."""
     test_file = tmp_path / "test.txt"
     test_file.write_text("line1\nline2\nneedle here\nline4\nline5\n", encoding="utf-8")
@@ -1095,7 +1100,7 @@ def test_ripgrep_context_lines(tmp_path):
     assert len(results[0].context_after) == 2
 
 
-def test_save_snapshot_transaction_safety(tmp_path):
+def test_save_snapshot_transaction_safety(tmp_path: Path):
     """save_snapshot must use IMMEDIATE isolation to ensure atomic DELETE+INSERT.
     If an error occurs mid-write, the transaction rolls back preserving old data."""
     import unittest.mock
@@ -1133,7 +1138,7 @@ def test_save_snapshot_transaction_safety(tmp_path):
     connect_kwargs: list[dict[str, object]] = []
     original_connect = sqlite3.connect
 
-    def tracking_connect(*args, **kwargs):
+    def tracking_connect(*args: Any, **kwargs: Any) -> Any:
         connect_kwargs.append(dict(kwargs))
         conn = original_connect(*args, **kwargs)
         return conn
@@ -1162,7 +1167,7 @@ def test_save_snapshot_transaction_safety(tmp_path):
     )
 
 
-def test_shutdown_stops_background_refresh(tmp_path):
+def test_shutdown_stops_background_refresh(tmp_path: Path):
     """shutdown() should cause the background refresh thread to terminate promptly."""
     from time import monotonic
 
@@ -1186,7 +1191,7 @@ def test_shutdown_stops_background_refresh(tmp_path):
         )
 
     # Clear in-memory cache to force persistent index load
-    engine._inventory_cache.clear()
+    engine._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]
 
     # Trigger a search that will start a background refresh
     list(engine.search_files(str(search_root), "file", search_within_files=False))
@@ -1196,23 +1201,23 @@ def test_shutdown_stops_background_refresh(tmp_path):
 
     deadline = monotonic() + 2.0
     while monotonic() < deadline:
-        with engine._inventory_refresh_lock:
-            if not engine._inventory_refreshes:
+        with engine._inventory_refresh_lock:  # pyright: ignore[reportPrivateUsage]
+            if not engine._inventory_refreshes:  # pyright: ignore[reportPrivateUsage]
                 break
         sleep(0.05)
 
-    with engine._inventory_refresh_lock:
-        assert not engine._inventory_refreshes, "Background refresh should have stopped"
+    with engine._inventory_refresh_lock:  # pyright: ignore[reportPrivateUsage]
+        assert not engine._inventory_refreshes, "Background refresh should have stopped"  # pyright: ignore[reportPrivateUsage]
 
 
-def test_always_binary_skip_no_sniff(tmp_path):
+def test_always_binary_skip_no_sniff(tmp_path: Path):
     """Always-binary extensions (.exr) should be rejected without calling _is_likely_binary;
     maybe-binary extensions (.usd) should call it and allow text-based files through."""
     engine = SearchEngine()
     sniff_calls: list[str] = []
-    original_is_likely_binary = engine._is_likely_binary
+    original_is_likely_binary = engine._is_likely_binary  # pyright: ignore[reportPrivateUsage]
 
-    def tracking_is_likely_binary(file_path):
+    def tracking_is_likely_binary(file_path: Path) -> bool:
         sniff_calls.append(str(file_path))
         return original_is_likely_binary(file_path)
 
@@ -1224,13 +1229,13 @@ def test_always_binary_skip_no_sniff(tmp_path):
     usd_file.write_text("usda 1.0\n")  # text-based USD
 
     # .exr should be rejected immediately (always-binary), no sniff needed
-    assert not engine._should_process_file(
+    assert not engine._should_process_file(  # pyright: ignore[reportPrivateUsage]
         "render.exr", [], [], search_within_files=True, file_path=exr_file
     )
     assert not any("render.exr" in call for call in sniff_calls)
 
     # .usd should trigger the sniff check (maybe-binary)
-    result = engine._should_process_file(
+    result = engine._should_process_file(  # pyright: ignore[reportPrivateUsage]
         "scene.usd", [], [], search_within_files=True, file_path=usd_file
     )
     assert any("scene.usd" in call for call in sniff_calls)
@@ -1241,4 +1246,4 @@ def test_always_binary_skip_no_sniff(tmp_path):
 def test_usdz_in_always_binary():
     """'.usdz' must be in the always-binary extensions set."""
     engine = SearchEngine()
-    assert ".usdz" in engine._always_binary_extensions
+    assert ".usdz" in engine._always_binary_extensions  # pyright: ignore[reportPrivateUsage]

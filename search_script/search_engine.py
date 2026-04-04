@@ -23,9 +23,9 @@ from time import time
 try:
     from rapidfuzz import fuzz
 
-    RAPIDFUZZ_AVAILABLE = True
+    _rapidfuzz_available: bool = True
 except ImportError:
-    RAPIDFUZZ_AVAILABLE = False
+    _rapidfuzz_available = False
 
 import pathspec
 
@@ -50,6 +50,8 @@ from .search_index import (
     InventorySnapshot,
     SearchIndexStore,
 )
+
+RAPIDFUZZ_AVAILABLE: bool = _rapidfuzz_available
 
 
 @dataclass
@@ -224,8 +226,8 @@ class SearchEngine:
         follow_symlinks: bool = False,
         include_ignored: bool = True,
         context_lines: int = 0,
-        progress_callback=None,
-        cancel_event=None,
+        progress_callback: Callable[[str], None] | None = None,
+        cancel_event: threading.Event | None = None,
         on_limit_reached: Callable[[int], None] | None = None,
     ) -> Generator[SearchResult, None, None]:
         """
@@ -515,7 +517,7 @@ class SearchEngine:
         directory: str,
         max_depth: int | None,
         follow_symlinks: bool,
-        progress_callback,
+        progress_callback: Callable[[str], None] | None,
         cancel_event: threading.Event | None,
         include_ignored: bool = True,
     ) -> InventorySnapshot | None:
@@ -666,7 +668,7 @@ class SearchEngine:
         directory: str,
         max_depth: int | None,
         follow_symlinks: bool,
-        progress_callback,
+        progress_callback: Callable[[str], None] | None,
         cancel_event: threading.Event | None,
         include_ignored: bool = True,
     ) -> InventorySnapshot | None:
@@ -859,7 +861,7 @@ class SearchEngine:
         self, text: str, normalized_term: str, *, allow_partial_fuzzy: bool
     ) -> float | None:
         """Compute a fuzzy score with tighter thresholds for filename matching."""
-        if not RAPIDFUZZ_AVAILABLE or not normalized_term:
+        if not _rapidfuzz_available or not normalized_term:
             return None
 
         normalized_text = text.lower()
@@ -964,12 +966,19 @@ class SearchEngine:
                 if even_nulls > len(raw[::2]) // 4 or odd_nulls > len(raw[1::2]) // 4:
                     return "utf-16"
 
-            for encoding in ("utf-8", "utf-8-sig", "utf-16"):
+            def _try_decode(enc: str) -> bool:
                 try:
-                    raw.decode(encoding)
-                    return encoding
+                    raw.decode(enc)
+                    return True
                 except UnicodeDecodeError:
-                    continue
+                    return False
+
+            matched = next(
+                (enc for enc in ("utf-8", "utf-8-sig", "utf-16") if _try_decode(enc)),
+                None,
+            )
+            if matched is not None:
+                return matched
         except Exception:
             pass
         return "utf-8"
@@ -1069,7 +1078,7 @@ class SearchEngine:
         follow_symlinks: bool,
         include_ignored: bool = True,
         context_lines: int = 0,
-        progress_callback=None,
+        progress_callback: Callable[[str], None] | None = None,
         cancel_event: threading.Event | None = None,
         on_limit_reached: Callable[[int], None] | None = None,
     ) -> Generator[SearchResult, None, None]:
@@ -1490,7 +1499,12 @@ class SearchEngine:
         except OSError as e:
             raise FileAccessError(f"Error reading file {file_path}: {e}") from e
 
-    def _update_progress(self, files_processed: int, current_dir: str, progress_callback):
+    def _update_progress(
+        self,
+        files_processed: int,
+        current_dir: str,
+        progress_callback: Callable[[str], None] | None,
+    ) -> None:
         """Update progress if callback provided."""
         if progress_callback and files_processed % 10 == 0:
             progress_callback(f"Scanning: {current_dir} ({files_processed} files)")
@@ -1499,7 +1513,7 @@ class SearchEngine:
         self,
         files_processed: int,
         total_files: int,
-        progress_callback,
+        progress_callback: Callable[[str], None] | None,
     ) -> None:
         """Update progress while iterating an already-built inventory."""
         if progress_callback and files_processed % 100 == 0:

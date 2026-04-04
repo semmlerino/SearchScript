@@ -21,8 +21,8 @@ target-version = "py310"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "C4", "PT", "PERF"]
 
 [tool.basedpyright]
 pythonVersion = "3.10"
-typeCheckingMode = "standard"
+typeCheckingMode = "strict"
