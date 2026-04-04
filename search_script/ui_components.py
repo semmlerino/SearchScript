@@ -1,10 +1,12 @@
 import csv
+import html
 import json
 import logging
 import os
 import re
 
 from PySide6.QtCore import QSettings, Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -19,6 +21,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSpinBox,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -199,6 +202,15 @@ class SearchUI(QMainWindow):
         self.include_ignored_checkbox = QCheckBox("Include ignored files")
         self.include_ignored_checkbox.setChecked(True)
         row.addWidget(self.include_ignored_checkbox)
+        row.addSpacing(15)
+
+        row.addWidget(QLabel("Context:"))
+        self.context_lines_spin = QSpinBox()
+        self.context_lines_spin.setRange(0, 10)
+        self.context_lines_spin.setValue(0)
+        self.context_lines_spin.setFixedWidth(60)
+        self.context_lines_spin.setToolTip("Number of context lines before/after matches")
+        row.addWidget(self.context_lines_spin)
         row.addStretch()
 
         self._main_layout.addLayout(row)
@@ -293,6 +305,8 @@ class SearchUI(QMainWindow):
         self.results_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.results_tree.customContextMenuRequested.connect(self._show_context_menu)
 
+        self._file_group_items: dict[str, ResultTreeWidgetItem] = {}
+
         self._main_layout.addWidget(self.results_tree, stretch=1)
 
     # --- Event handlers ---
@@ -330,6 +344,7 @@ class SearchUI(QMainWindow):
             "match_folders": self.match_folders_checkbox.isChecked(),
             "follow_symlinks": self.follow_symlinks_checkbox.isChecked(),
             "include_ignored": self.include_ignored_checkbox.isChecked(),
+            "context_lines": self.context_lines_spin.value(),
         }
         self.search_requested.emit(search_params)
 
@@ -399,26 +414,40 @@ class SearchUI(QMainWindow):
     def _on_result_double_click(self, item: QTreeWidgetItem, column: int):
         """Handle result double-click."""
         result = item.data(0, RESULT_ROLE)
-        if result is not None:
-            self.result_double_clicked.emit(result)
+        if result is None:
+            return
+        if isinstance(result, dict) and result.get("is_group"):
+            item.setExpanded(not item.isExpanded())
+            return
+        self.result_double_clicked.emit(result)
 
     def _show_context_menu(self, pos):
         """Show context menu on right-click."""
         item = self.results_tree.itemAt(pos)
-        if item:
-            self.results_tree.setCurrentItem(item)
-            menu = QMenu(self)
-            open_action = menu.addAction("Open Containing Folder")
-            open_action.triggered.connect(self._on_open_containing_folder)
-            menu.exec(self.results_tree.viewport().mapToGlobal(pos))
+        if not item:
+            return
+        self.results_tree.setCurrentItem(item)
+        menu = QMenu(self)
+        result = item.data(0, RESULT_ROLE)
+        if isinstance(result, dict) and result.get("is_group"):
+            toggle_text = "Collapse" if item.isExpanded() else "Expand"
+            toggle_action = menu.addAction(toggle_text)
+            toggle_action.triggered.connect(lambda: item.setExpanded(not item.isExpanded()))
+        open_action = menu.addAction("Open Containing Folder")
+        open_action.triggered.connect(self._on_open_containing_folder)
+        menu.exec(self.results_tree.viewport().mapToGlobal(pos))
 
     def _on_open_containing_folder(self):
         """Handle open containing folder menu item."""
         item = self.results_tree.currentItem()
-        if item:
-            result = item.data(0, RESULT_ROLE) or {}
+        if not item:
+            return
+        result = item.data(0, RESULT_ROLE) or {}
+        if isinstance(result, dict) and result.get("is_group"):
             file_path = result.get("file_path", item.text(0))
-            self.open_folder_requested.emit(file_path)
+        else:
+            file_path = result.get("file_path", item.text(0))
+        self.open_folder_requested.emit(file_path)
 
     def _apply_preset(self, preset: str):
         """Apply a file type preset."""
@@ -460,11 +489,74 @@ class SearchUI(QMainWindow):
     def clear_results(self):
         """Clear the results tree."""
         self.results_tree.clear()
+        self._file_group_items = {}
 
     def add_results_batch(self, items: list[SearchResult]) -> None:
-        """Add multiple results efficiently using addTopLevelItems."""
-        tree_items = [self._create_result_item(result) for result in items]
-        self.results_tree.addTopLevelItems(tree_items)
+        """Add multiple results, grouping content search results by file."""
+        # Detect if this is content search (results have line numbers)
+        is_content_search = any(r.line_number is not None for r in items)
+        if not is_content_search:
+            # Flat mode for filename search — unchanged behavior
+            tree_items = [self._create_result_item(result) for result in items]
+            self.results_tree.addTopLevelItems(tree_items)
+            return
+        # Grouped mode for content search
+        for result in items:
+            parent = self._file_group_items.get(result.file_path)
+            if parent is None:
+                parent = ResultTreeWidgetItem(
+                    [
+                        result.file_path,
+                        "",  # match count placeholder, updated below
+                        result.formatted_size,
+                        result.formatted_mod_time,
+                    ]
+                )
+                parent.setData(0, SORT_ROLE, result.file_path.lower())
+                parent.setData(0, RESULT_ROLE, {"file_path": result.file_path, "is_group": True})
+                parent.setData(
+                    2, SORT_ROLE, result.file_size if result.file_size is not None else -1
+                )
+                parent.setData(
+                    3, SORT_ROLE, result.mod_time if result.mod_time is not None else -1.0
+                )
+                parent.setToolTip(0, result.file_path)
+                self._file_group_items[result.file_path] = parent
+                self.results_tree.addTopLevelItem(parent)
+
+            # Add before-context lines as dimmed children
+            if result.context_before:
+                for ctx_line in result.context_before:
+                    ctx_item = QTreeWidgetItem(["", ctx_line, "", ""])
+                    ctx_item.setForeground(1, QColor(128, 128, 128))
+                    font = ctx_item.font(1)
+                    font.setItalic(True)
+                    ctx_item.setFont(1, font)
+                    parent.addChild(ctx_item)
+
+            # Add the match child
+            child = self._create_result_item(result)
+            parent.addChild(child)
+            self._apply_match_highlight(child)
+
+            # Add after-context lines as dimmed children
+            if result.context_after:
+                for ctx_line in result.context_after:
+                    ctx_item = QTreeWidgetItem(["", ctx_line, "", ""])
+                    ctx_item.setForeground(1, QColor(128, 128, 128))
+                    font = ctx_item.font(1)
+                    font.setItalic(True)
+                    ctx_item.setFont(1, font)
+                    parent.addChild(ctx_item)
+
+            # Update match count — only count items with RESULT_ROLE data
+            actual_matches = sum(
+                1
+                for j in range(parent.childCount())
+                if parent.child(j) is not None and parent.child(j).data(0, RESULT_ROLE) is not None  # type: ignore[union-attr]
+            )
+            parent.setText(1, f"{actual_matches} match{'es' if actual_matches != 1 else ''}")
+            parent.setData(1, SORT_ROLE, actual_matches)
 
     def _create_result_item(self, result: SearchResult) -> ResultTreeWidgetItem:
         """Convert a SearchResult into a sortable tree row with attached metadata."""
@@ -488,6 +580,9 @@ class SearchUI(QMainWindow):
             if result.next_line:
                 tooltip = f"{tooltip}\n{result.next_line}"
             item.setToolTip(1, tooltip)
+        # Store highlight info for widget creation
+        if result.match_start is not None and result.match_length and result.match_length > 0:
+            item.setData(1, SORT_ROLE + 1, (result.match_start, result.match_length))
         return item
 
     def _serialize_result(self, result: SearchResult) -> dict[str, str | int | float | None]:
@@ -502,7 +597,34 @@ class SearchUI(QMainWindow):
             "formatted_size": result.formatted_size,
             "formatted_mod_time": result.formatted_mod_time,
             "match_score": result.match_score,
+            "match_start": result.match_start,
+            "match_length": result.match_length,
         }
+
+    def _apply_match_highlight(self, item: ResultTreeWidgetItem) -> None:
+        """Apply HTML highlighting to the matching line column if match position is available."""
+        highlight_data = item.data(1, SORT_ROLE + 1)
+        if highlight_data is None:
+            return
+        match_start, match_length = highlight_data
+        metadata = item.data(0, RESULT_ROLE)
+        if not metadata:
+            return
+        line_content = metadata.get("line_content", "")
+        line_number = metadata.get("line_number")
+        if not line_content or line_number is None:
+            return
+
+        prefix = f"{line_number}: "
+        before = html.escape(line_content[:match_start])
+        matched = html.escape(line_content[match_start : match_start + match_length])
+        after = html.escape(line_content[match_start + match_length :])
+        html_text = f'{html.escape(prefix)}{before}<b style="color: #e8a025;">{matched}</b>{after}'
+
+        label = QLabel(html_text)
+        label.setTextFormat(Qt.TextFormat.RichText)
+        label.setContentsMargins(2, 0, 2, 0)
+        self.results_tree.setItemWidget(item, 1, label)
 
     def _parse_optional_int(self, value: str) -> int | None:
         """Parse an optional integer field after validation has run."""
@@ -532,7 +654,18 @@ class SearchUI(QMainWindow):
         rows: list[dict[str, str | int | float | None]] = []
         for i in range(self.results_tree.topLevelItemCount()):
             item = self.results_tree.topLevelItem(i)
-            if item is not None:
+            if item is None:
+                continue
+            if item.childCount() > 0:
+                # Grouped parent — export children that have result metadata
+                for j in range(item.childCount()):
+                    child = item.child(j)
+                    if child is not None:
+                        metadata = child.data(0, RESULT_ROLE)
+                        if metadata:
+                            rows.append(metadata)
+            else:
+                # Flat item
                 metadata = item.data(0, RESULT_ROLE)
                 if metadata:
                     rows.append(metadata)
@@ -586,12 +719,22 @@ class SearchUI(QMainWindow):
 
     def get_result_summary(self) -> tuple[int, int]:
         """Return displayed match count and unique file count."""
-        match_count = self.results_tree.topLevelItemCount()
+        match_count = 0
         file_paths: set[str] = set()
-        for index in range(match_count):
+        for index in range(self.results_tree.topLevelItemCount()):
             item = self.results_tree.topLevelItem(index)
             if item is None:
                 continue
-            metadata = item.data(0, RESULT_ROLE) or {}
-            file_paths.add(str(metadata.get("file_path", item.text(0))))
+            if item.childCount() > 0:
+                # Grouped parent — count only children with RESULT_ROLE data
+                file_paths.add(item.text(0))
+                for j in range(item.childCount()):
+                    child = item.child(j)
+                    if child is not None and child.data(0, RESULT_ROLE) is not None:
+                        match_count += 1
+            else:
+                # Flat item
+                match_count += 1
+                metadata = item.data(0, RESULT_ROLE) or {}
+                file_paths.add(str(metadata.get("file_path", item.text(0))))
         return match_count, len(file_paths)

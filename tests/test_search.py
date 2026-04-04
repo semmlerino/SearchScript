@@ -435,15 +435,16 @@ def test_controller_drain_remaining_results(qapp):
     sentinel = controller._drain_remaining_results()
 
     assert sentinel == ("done", 1)
+    # Content results are now grouped: 1 parent file item with 1 child match
     assert controller.ui.results_tree.topLevelItemCount() == 1
-    row = controller.ui.results_tree.topLevelItem(0)
-    assert row is not None
-    assert [row.text(i) for i in range(4)] == [
-        "/tmp/a.txt",
-        "3: hello",
-        "12 B",
-        result.formatted_mod_time,
-    ]
+    parent = controller.ui.results_tree.topLevelItem(0)
+    assert parent is not None
+    assert parent.text(0) == "/tmp/a.txt"
+    assert parent.text(1) == "1 match"
+    assert parent.childCount() == 1
+    child = parent.child(0)
+    assert child is not None
+    assert child.text(1) == "3: hello"
     close_widget(controller.ui)
 
 
@@ -784,3 +785,120 @@ def test_include_ignored_true_returns_all(tmp_path):
     paths = {r.file_path for r in results}
     assert str(tmp_path / "app.py") in paths
     assert str(tmp_path / "debug.log") in paths
+
+
+# ---------------------------------------------------------------------------
+# C1: Result grouping by file
+# ---------------------------------------------------------------------------
+
+
+def test_content_results_grouped_by_file(qapp):
+    """Content search results should be grouped under parent file items."""
+    ui = SearchUI()
+    ui.add_results_batch(
+        [
+            SearchResult("/tmp/a.txt", 1, "hello", None, mod_time=1.0, file_size=100),
+            SearchResult("/tmp/a.txt", 5, "hello again", None, mod_time=1.0, file_size=100),
+            SearchResult("/tmp/b.txt", 3, "hello there", None, mod_time=2.0, file_size=200),
+        ]
+    )
+    # Should have 2 top-level items (one per file)
+    assert ui.results_tree.topLevelItemCount() == 2
+    # Collect parents regardless of sort order
+    parents = {}
+    for i in range(ui.results_tree.topLevelItemCount()):
+        item = ui.results_tree.topLevelItem(i)
+        assert item is not None
+        parents[item.text(0)] = item
+    assert "/tmp/a.txt" in parents
+    assert "/tmp/b.txt" in parents
+    assert parents["/tmp/a.txt"].childCount() == 2
+    assert parents["/tmp/b.txt"].childCount() == 1
+    # get_result_summary should count 3 matches, 2 files
+    matches, files = ui.get_result_summary()
+    assert matches == 3
+    assert files == 2
+    close_widget(ui)
+
+
+def test_filename_results_remain_flat(qapp):
+    """Filename search results (no line_number) should stay flat."""
+    ui = SearchUI()
+    ui.add_results_batch(
+        [
+            SearchResult("/tmp/a.txt", file_size=100, mod_time=1.0),
+            SearchResult("/tmp/b.txt", file_size=200, mod_time=2.0),
+        ]
+    )
+    assert ui.results_tree.topLevelItemCount() == 2
+    assert ui.results_tree.topLevelItem(0).childCount() == 0  # type: ignore[union-attr]
+    close_widget(ui)
+
+
+# ---------------------------------------------------------------------------
+# C2: Configurable context lines
+# ---------------------------------------------------------------------------
+
+
+def test_context_lines_python_backend(tmp_path):
+    """Context lines should be captured when context_lines > 0."""
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("line1\nline2\nneedle here\nline4\nline5\n")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "needle",
+            search_within_files=True,
+            search_backend=SearchBackend.PYTHON,
+            context_lines=2,
+        )
+    )
+    assert len(results) == 1
+    assert results[0].context_before == ["line1", "line2"]
+    assert results[0].context_after == ["line4", "line5"]
+
+
+# ---------------------------------------------------------------------------
+# C3: Match position tracking
+# ---------------------------------------------------------------------------
+
+
+def test_match_position_substring(tmp_path):
+    """Substring search should report match start and length."""
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("Hello World")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "World",
+            search_within_files=True,
+            search_backend=SearchBackend.PYTHON,
+        )
+    )
+    assert len(results) == 1
+    assert results[0].match_start == 6
+    assert results[0].match_length == 5
+
+
+def test_match_position_regex(tmp_path):
+    """Regex search should report match start and length."""
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("foo bar123 baz")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            r"bar\d+",
+            search_within_files=True,
+            search_mode=SearchMode.REGEX,
+            search_backend=SearchBackend.PYTHON,
+        )
+    )
+    assert len(results) == 1
+    assert results[0].match_start == 4
+    assert results[0].match_length == 6

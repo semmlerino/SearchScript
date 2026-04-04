@@ -11,6 +11,7 @@ import subprocess
 import threading
 import types
 from base64 import b64decode
+from collections import deque
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from datetime import datetime
@@ -60,6 +61,10 @@ class SearchResult:
     mod_time: float | None = None
     file_size: int | None = None
     match_score: float | None = None
+    context_before: list[str] | None = None
+    context_after: list[str] | None = None
+    match_start: int | None = None
+    match_length: int | None = None
 
     @property
     def display_text(self) -> str:
@@ -212,6 +217,7 @@ class SearchEngine:
         match_folders: bool = False,
         follow_symlinks: bool = False,
         include_ignored: bool = True,
+        context_lines: int = 0,
         progress_callback=None,
         cancel_event=None,
         on_limit_reached: Callable[[int], None] | None = None,
@@ -263,6 +269,7 @@ class SearchEngine:
                 modified_before_ts=modified_before_ts,
                 follow_symlinks=follow_symlinks,
                 include_ignored=include_ignored,
+                context_lines=context_lines,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
                 on_limit_reached=on_limit_reached,
@@ -295,13 +302,14 @@ class SearchEngine:
                         self.logger.info(f"Search cancelled. Files processed: {files_processed}")
                         return
                     folder_name = os.path.basename(dir_path)
-                    score = self._score_match(
+                    result_tuple = self._score_match(
                         folder_name,
                         match_plan,
                         allow_partial_fuzzy=False,
                     )
-                    if score is None:
+                    if result_tuple is None:
                         continue
+                    score, _, _ = result_tuple
                     result = SearchResult(dir_path, match_score=score)
                     if deferred_results is not None:
                         deferred_results.append(result)
@@ -357,12 +365,19 @@ class SearchEngine:
                         chunk = content_entries[
                             chunk_start : chunk_start + CONTENT_SEARCH_POOL_CHUNK_SIZE
                         ]
+
+                        def _make_task(
+                            fp: Path,
+                            fs: int,
+                            mp: MatchPlan = match_plan,
+                            cl: int = context_lines,
+                        ) -> list[SearchResult]:
+                            return list(
+                                self._search_file_content(fp, mp, file_size=fs, context_lines=cl)
+                            )
+
                         future_to_entry = {
-                            executor.submit(
-                                lambda fp=Path(e.file_path), mp=match_plan, fs=e.file_size: list(
-                                    self._search_file_content(fp, mp, file_size=fs)
-                                )
-                            ): e
+                            executor.submit(_make_task, Path(e.file_path), e.file_size): e
                             for e in chunk
                         }
                         for future in concurrent.futures.as_completed(future_to_entry):
@@ -407,12 +422,13 @@ class SearchEngine:
                         continue
 
                     try:
-                        score = self._score_match(
+                        result_tuple = self._score_match(
                             entry.file_name,
                             match_plan,
                             allow_partial_fuzzy=False,
                         )
-                        if score is not None:
+                        if result_tuple is not None:
+                            score, _, _ = result_tuple
                             result = SearchResult(
                                 entry.file_path,
                                 mod_time=entry.mod_time,
@@ -812,21 +828,32 @@ class SearchEngine:
         match_plan: MatchPlan,
         *,
         allow_partial_fuzzy: bool,
-    ) -> float | None:
-        """Return a match score, or None when the text does not match."""
+    ) -> tuple[float, int, int] | None:
+        """Return (score, match_start, match_length), or None when no match."""
         if match_plan.mode == SearchMode.SUBSTRING:
-            return 100.0 if match_plan.normalized_term in text.lower() else None
+            idx = text.lower().find(match_plan.normalized_term)
+            if idx >= 0:
+                return (100.0, idx, len(match_plan.normalized_term))
+            return None
         if match_plan.mode == SearchMode.GLOB:
             has_glob_chars = any(c in match_plan.raw_term for c in "*?[]")
             pattern = match_plan.raw_term if has_glob_chars else f"*{match_plan.raw_term}*"
-            return 100.0 if fnmatch.fnmatch(text.lower(), pattern.lower()) else None
+            if fnmatch.fnmatch(text.lower(), pattern.lower()):
+                return (100.0, 0, len(text))
+            return None
         if match_plan.mode == SearchMode.REGEX:
             assert match_plan.regex is not None
-            return 100.0 if match_plan.regex.search(text) else None
+            m = match_plan.regex.search(text)
+            if m:
+                return (100.0, m.start(), m.end() - m.start())
+            return None
         if match_plan.mode == SearchMode.FUZZY:
-            return self._score_fuzzy_match(
+            score = self._score_fuzzy_match(
                 text, match_plan.normalized_term, allow_partial_fuzzy=allow_partial_fuzzy
             )
+            if score is not None:
+                return (score, 0, 0)  # No precise position for fuzzy
+            return None
         return None
 
     def _matches_term(
@@ -966,20 +993,26 @@ class SearchEngine:
         file_path: Path,
         match_plan: MatchPlan,
         file_size: int = 0,
+        context_lines: int = 0,
     ) -> Generator[SearchResult, None, None]:
         """Search within file content for the search term using optimized methods."""
         if file_size == 0:
             return
         if file_size > LARGE_FILE_MMAP_THRESHOLD:
-            yield from self._search_large_file(file_path, match_plan, file_size=file_size)
+            yield from self._search_large_file(
+                file_path, match_plan, file_size=file_size, context_lines=context_lines
+            )
         else:
-            yield from self._search_small_file(file_path, match_plan, file_size=file_size)
+            yield from self._search_small_file(
+                file_path, match_plan, file_size=file_size, context_lines=context_lines
+            )
 
     def _search_small_file(
         self,
         file_path: Path,
         match_plan: MatchPlan,
         file_size: int | None = None,
+        context_lines: int = 0,
     ) -> Generator[SearchResult, None, None]:
         """Search small files using standard file reading."""
         try:
@@ -987,14 +1020,35 @@ class SearchEngine:
             with open(file_path, encoding=encoding, errors="replace") as f:
                 lines = f.readlines()
             for i, line in enumerate(lines):
-                score = self._score_match(line, match_plan, allow_partial_fuzzy=True)
-                if score is not None:
+                result_tuple = self._score_match(line, match_plan, allow_partial_fuzzy=True)
+                if result_tuple is not None:
+                    score, raw_match_start, match_length = result_tuple
                     line_content = line.strip()
                     if len(line_content) > LINE_CONTENT_MAX_CHARS:
                         line_content = line_content[:LINE_CONTENT_MAX_CHARS] + "..."
                     next_line = lines[i + 1].strip() if i + 1 < len(lines) else None
                     if next_line and len(next_line) > LINE_CONTENT_MAX_CHARS:
                         next_line = next_line[:LINE_CONTENT_MAX_CHARS] + "..."
+
+                    # Adjust match_start for stripped leading whitespace
+                    strip_offset = len(line) - len(line.lstrip())
+                    match_start = max(0, raw_match_start - strip_offset)
+
+                    ctx_before: list[str] | None = None
+                    ctx_after: list[str] | None = None
+                    if context_lines > 0:
+                        before_start = max(0, i - context_lines)
+                        ctx_before = [ln.strip() for ln in lines[before_start:i]]
+                        after_end = min(len(lines), i + 1 + context_lines)
+                        ctx_after = [ln.strip() for ln in lines[i + 1 : after_end]]
+                        for lst in (ctx_before, ctx_after):
+                            for idx, line_text in enumerate(lst):
+                                if len(line_text) > LINE_CONTENT_MAX_CHARS:
+                                    lst[idx] = line_text[:LINE_CONTENT_MAX_CHARS] + "..."
+                        # Override next_line with first after-context line when available
+                        if ctx_after:
+                            next_line = ctx_after[0]
+
                     yield SearchResult(
                         str(file_path),
                         i + 1,
@@ -1002,6 +1056,10 @@ class SearchEngine:
                         next_line,
                         file_size=file_size,
                         match_score=score,
+                        context_before=ctx_before,
+                        context_after=ctx_after,
+                        match_start=match_start,
+                        match_length=match_length,
                     )
         except PermissionError as e:
             raise FileAccessError(f"Permission denied reading file: {file_path}") from e
@@ -1024,6 +1082,7 @@ class SearchEngine:
         modified_before_ts: float | None,
         follow_symlinks: bool,
         include_ignored: bool = True,
+        context_lines: int = 0,
         progress_callback=None,
         cancel_event: threading.Event | None = None,
         on_limit_reached: Callable[[int], None] | None = None,
@@ -1040,6 +1099,7 @@ class SearchEngine:
             max_depth=max_depth,
             follow_symlinks=follow_symlinks,
             include_ignored=include_ignored,
+            context_lines=context_lines,
         )
         if progress_callback:
             progress_callback(f"Searching with ripgrep: {directory}")
@@ -1141,9 +1201,23 @@ class SearchEngine:
                 ):
                     continue
 
-                line_text = self._decode_ripgrep_text(data["lines"]).rstrip("\n").rstrip("\r")
-                if len(line_text) > LINE_CONTENT_MAX_CHARS:
-                    line_text = line_text[:LINE_CONTENT_MAX_CHARS] + "..."
+                raw_line_text = self._decode_ripgrep_text(data["lines"]).rstrip("\n").rstrip("\r")
+                stripped_line = raw_line_text.strip()
+                if len(stripped_line) > LINE_CONTENT_MAX_CHARS:
+                    stripped_line = stripped_line[:LINE_CONTENT_MAX_CHARS] + "..."
+
+                # Parse submatch positions for highlighting
+                submatches = data.get("submatches", [])
+                rg_match_start: int | None = None
+                rg_match_length: int | None = None
+                if submatches:
+                    sm = submatches[0]
+                    sm_start = sm.get("start")
+                    sm_end = sm.get("end")
+                    if sm_start is not None and sm_end is not None:
+                        strip_offset = len(raw_line_text) - len(raw_line_text.lstrip())
+                        rg_match_start = max(0, sm_start - strip_offset)
+                        rg_match_length = sm_end - sm_start
 
                 matches += 1
                 if progress_callback and matches % RIPGREP_PROGRESS_MILESTONE == 0:
@@ -1152,9 +1226,11 @@ class SearchEngine:
                 yield SearchResult(
                     str(file_path),
                     data.get("line_number"),
-                    line_text.strip(),
+                    stripped_line,
                     file_size=stat_result.st_size,
                     mod_time=stat_result.st_mtime,
+                    match_start=rg_match_start,
+                    match_length=rg_match_length,
                 )
                 emitted_results += 1
                 if max_results is not None and emitted_results >= max_results:
@@ -1180,6 +1256,7 @@ class SearchEngine:
         max_depth: int | None,
         follow_symlinks: bool,
         include_ignored: bool = True,
+        context_lines: int = 0,
     ) -> list[str]:
         """Build a ripgrep command that preserves this app's file-selection semantics."""
         if self._rg_path is None:
@@ -1202,6 +1279,8 @@ class SearchEngine:
             command.append("-L")
         if max_depth is not None:
             command.extend(["--max-depth", str(max_depth)])
+        if context_lines > 0:
+            command.extend(["-C", str(context_lines)])
         for ext in include_types:
             command.extend(["-g", f"*{ext}"])
         for ext in exclude_types:
@@ -1287,6 +1366,7 @@ class SearchEngine:
         file_path: Path,
         match_plan: MatchPlan,
         file_size: int | None = None,
+        context_lines: int = 0,
     ) -> Generator[SearchResult, None, None]:
         """Search large files using memory mapping for better performance."""
         try:
@@ -1296,22 +1376,28 @@ class SearchEngine:
                         encoding = self._detect_bom(file_path) or "utf-8"
                         line_no = 0
                         pos = 0
+                        maxlen = context_lines if context_lines > 0 else 0
+                        prev_lines: deque[str] = deque(maxlen=maxlen)
                         while pos < len(mm):
                             eol = mm.find(b"\n", pos)
                             end = eol if eol != -1 else len(mm)
                             line_bytes = mm[pos:end]
                             line_text = line_bytes.decode(encoding, errors="replace").rstrip("\r")
                             line_no += 1
-                            score = self._score_match(
+                            result_tuple = self._score_match(
                                 line_text,
                                 match_plan,
                                 allow_partial_fuzzy=True,
                             )
-                            if score is not None:
+                            if result_tuple is not None:
+                                score, raw_match_start, match_length = result_tuple
                                 line_content = line_text.strip()
                                 if len(line_content) > LINE_CONTENT_MAX_CHARS:
                                     line_content = line_content[:LINE_CONTENT_MAX_CHARS] + "..."
-                                # Peek at next line for context_after
+                                # Adjust match_start for stripped leading whitespace
+                                strip_offset = len(line_text) - len(line_text.lstrip())
+                                match_start = max(0, raw_match_start - strip_offset)
+                                # Peek at next line for next_line / context_after
                                 next_line: str | None = None
                                 if eol != -1:
                                     next_eol = mm.find(b"\n", end + 1)
@@ -1326,6 +1412,12 @@ class SearchEngine:
                                         if len(raw_next) > LINE_CONTENT_MAX_CHARS:
                                             raw_next = raw_next[:LINE_CONTENT_MAX_CHARS] + "..."
                                         next_line = raw_next
+                                ctx_before: list[str] | None = None
+                                ctx_after: list[str] | None = None
+                                if context_lines > 0:
+                                    ctx_before = list(prev_lines)
+                                    # context_after: just use next_line as a single-element list
+                                    ctx_after = [next_line] if next_line else None
                                 yield SearchResult(
                                     str(file_path),
                                     line_no,
@@ -1333,12 +1425,19 @@ class SearchEngine:
                                     next_line,
                                     file_size=file_size,
                                     match_score=score,
+                                    context_before=ctx_before,
+                                    context_after=ctx_after,
+                                    match_start=match_start,
+                                    match_length=match_length,
                                 )
+                            prev_lines.append(line_text.strip())
                             pos = end + 1
 
                 except (OSError, ValueError):
                     # Fallback to regular file reading if mmap fails
-                    yield from self._search_small_file(file_path, match_plan, file_size=file_size)
+                    yield from self._search_small_file(
+                        file_path, match_plan, file_size=file_size, context_lines=context_lines
+                    )
 
         except PermissionError as e:
             raise FileAccessError(f"Permission denied reading file: {file_path}") from e

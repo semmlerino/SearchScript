@@ -155,6 +155,7 @@ class SearchController:
                 match_folders=search_params.get("match_folders", False),
                 follow_symlinks=search_params.get("follow_symlinks", False),
                 include_ignored=search_params.get("include_ignored", True),
+                context_lines=search_params.get("context_lines", 0),
                 progress_callback=progress_callback,
                 on_limit_reached=on_limit_reached,
                 cancel_event=self.cancel_event,
