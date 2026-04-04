@@ -9,7 +9,7 @@ import shutil
 import threading
 import types
 from collections import deque
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -41,6 +41,26 @@ from .ripgrep_backend import RipgrepBackend, RipgrepUnavailableError
 from .search_index import (
     InventoryEntry,
 )
+
+
+def _collect_context(
+    lines: Sequence[str],
+    match_index: int,
+    context_lines: int,
+) -> tuple[list[str] | None, list[str] | None, str | None]:
+    """Collect before/after context lines and next_line for a matched line.
+
+    Returns (ctx_before, ctx_after, next_line_override).
+    next_line_override is the first after-context line when available, else None.
+    """
+    if context_lines <= 0:
+        return None, None, None
+    before_start = max(0, match_index - context_lines)
+    ctx_before = [truncate_line(ln.strip()) for ln in lines[before_start:match_index]]
+    after_end = min(len(lines), match_index + 1 + context_lines)
+    ctx_after = [truncate_line(ln.strip()) for ln in lines[match_index + 1 : after_end]]
+    next_line_override = ctx_after[0] if ctx_after else None
+    return ctx_before, ctx_after, next_line_override
 
 
 class SearchEngine:
@@ -690,19 +710,9 @@ class SearchEngine:
                     strip_offset = len(line) - len(line.lstrip())
                     match_start = max(0, raw_match_start - strip_offset)
 
-                    ctx_before: list[str] | None = None
-                    ctx_after: list[str] | None = None
-                    if context_lines > 0:
-                        before_start = max(0, i - context_lines)
-                        ctx_before = [ln.strip() for ln in lines[before_start:i]]
-                        after_end = min(len(lines), i + 1 + context_lines)
-                        ctx_after = [ln.strip() for ln in lines[i + 1 : after_end]]
-                        for lst in (ctx_before, ctx_after):
-                            for idx, line_text in enumerate(lst):
-                                lst[idx] = truncate_line(line_text)
-                        # Override next_line with first after-context line when available
-                        if ctx_after:
-                            next_line = ctx_after[0]
+                    ctx_before, ctx_after, ctx_next = _collect_context(lines, i, context_lines)
+                    if ctx_next is not None:
+                        next_line = ctx_next
 
                     yield SearchResult(
                         str(file_path),
