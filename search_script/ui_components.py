@@ -83,6 +83,9 @@ class SearchUI(QMainWindow):
         within_files = settings.value("search_within_files")
         if isinstance(within_files, bool):
             self.within_checkbox.setChecked(within_files)
+        exclude_shots = settings.value("exclude_shots")
+        if isinstance(exclude_shots, bool):
+            self.exclude_shots_checkbox.setChecked(exclude_shots)
         geometry = settings.value("window_geometry")
         if geometry is not None:
             self.restoreGeometry(geometry)
@@ -95,6 +98,7 @@ class SearchUI(QMainWindow):
         settings.setValue("search_mode_index", self.mode_combo.currentIndex())
         settings.setValue("search_backend_index", self.backend_combo.currentIndex())
         settings.setValue("search_within_files", self.within_checkbox.isChecked())
+        settings.setValue("exclude_shots", self.exclude_shots_checkbox.isChecked())
         settings.setValue("window_geometry", self.saveGeometry())
         super().closeEvent(event)
 
@@ -245,6 +249,10 @@ class SearchUI(QMainWindow):
         self.include_ignored_checkbox = QCheckBox("Include ignored files")
         self.include_ignored_checkbox.setChecked(False)
         row.addWidget(self.include_ignored_checkbox)
+        self.exclude_shots_checkbox = QCheckBox("Exclude shots/")
+        self.exclude_shots_checkbox.setChecked(True)
+        self.exclude_shots_checkbox.setToolTip("Skip directories named 'shots' during search")
+        row.addWidget(self.exclude_shots_checkbox)
         row.addSpacing(15)
 
         row.addWidget(QLabel("Context:"))
@@ -397,6 +405,7 @@ class SearchUI(QMainWindow):
             "include_ignored": self.include_ignored_checkbox.isChecked(),
             "context_lines": self.context_lines_spin.value(),
             "case_sensitive": self.case_sensitive_checkbox.isChecked(),
+            "exclude_shots": self.exclude_shots_checkbox.isChecked(),
         }
         self.search_requested.emit(search_params)
 

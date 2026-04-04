@@ -16,6 +16,7 @@ class InventoryCacheKey:
     max_depth: int | None
     follow_symlinks: bool
     include_ignored: bool
+    exclude_shots: bool
 
 
 @dataclass(frozen=True)
@@ -248,6 +249,7 @@ class SearchIndexStore:
         return json.dumps(
             {
                 "directory": cache_key.directory,
+                "exclude_shots": cache_key.exclude_shots,
                 "follow_symlinks": cache_key.follow_symlinks,
                 "include_ignored": cache_key.include_ignored,
                 "max_depth": cache_key.max_depth,

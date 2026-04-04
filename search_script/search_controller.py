@@ -173,6 +173,7 @@ class SearchController:
                 include_ignored=search_params.get("include_ignored", True),
                 context_lines=search_params.get("context_lines", 0),
                 case_sensitive=search_params.get("case_sensitive", False),
+                exclude_shots=search_params.get("exclude_shots", True),
                 progress_callback=progress_callback,
                 on_limit_reached=on_limit_reached,
                 cancel_event=cancel_event,
@@ -326,6 +327,7 @@ class SearchController:
             max_depth=params.get("max_depth"),
             follow_symlinks=params.get("follow_symlinks", False),
             include_ignored=params.get("include_ignored", True),
+            exclude_shots=params.get("exclude_shots", True),
         )
         self._start_search(dict(params))
 

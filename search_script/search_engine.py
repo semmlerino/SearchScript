@@ -232,6 +232,7 @@ class SearchEngine:
         include_ignored: bool = True,
         context_lines: int = 0,
         case_sensitive: bool = False,
+        exclude_shots: bool = True,
         progress_callback: Callable[[str], None] | None = None,
         cancel_event: threading.Event | None = None,
         on_limit_reached: Callable[[int], None] | None = None,
@@ -284,6 +285,7 @@ class SearchEngine:
                 follow_symlinks=follow_symlinks,
                 include_ignored=include_ignored,
                 context_lines=context_lines,
+                exclude_shots=exclude_shots,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
                 on_limit_reached=on_limit_reached,
@@ -299,6 +301,7 @@ class SearchEngine:
             progress_callback=progress_callback,
             cancel_event=cancel_event,
             include_ignored=include_ignored,
+            exclude_shots=exclude_shots,
         )
         if inventory is None:
             return
@@ -523,6 +526,7 @@ class SearchEngine:
         progress_callback: Callable[[str], None] | None,
         cancel_event: threading.Event | None,
         include_ignored: bool = True,
+        exclude_shots: bool = True,
     ) -> InventorySnapshot | None:
         """Return a fresh or cached inventory snapshot for scan-based searches."""
         cache_key = InventoryCacheKey(
@@ -530,6 +534,7 @@ class SearchEngine:
             max_depth=max_depth,
             follow_symlinks=follow_symlinks,
             include_ignored=include_ignored,
+            exclude_shots=exclude_shots,
         )
         stale_snapshot: InventorySnapshot | None = None
         with self._inventory_cache_lock:
@@ -578,6 +583,7 @@ class SearchEngine:
                 max_depth=max_depth,
                 follow_symlinks=follow_symlinks,
                 include_ignored=include_ignored,
+                exclude_shots=exclude_shots,
             )
             return stale_snapshot
 
@@ -588,6 +594,7 @@ class SearchEngine:
             progress_callback=progress_callback,
             cancel_event=cancel_event,
             include_ignored=include_ignored,
+            exclude_shots=exclude_shots,
         )
         if snapshot is None:
             return None
@@ -633,6 +640,7 @@ class SearchEngine:
         max_depth: int | None,
         follow_symlinks: bool,
         include_ignored: bool,
+        exclude_shots: bool = True,
     ) -> None:
         """Public API: evict a specific inventory from both caches."""
         cache_key = InventoryCacheKey(
@@ -640,6 +648,7 @@ class SearchEngine:
             max_depth=max_depth,
             follow_symlinks=follow_symlinks,
             include_ignored=include_ignored,
+            exclude_shots=exclude_shots,
         )
         with self._inventory_cache_lock:
             self._inventory_cache.pop(cache_key, None)
@@ -669,6 +678,7 @@ class SearchEngine:
         max_depth: int | None,
         follow_symlinks: bool,
         include_ignored: bool = True,
+        exclude_shots: bool = True,
     ) -> None:
         """Kick off a deduplicated background inventory refresh."""
         with self._inventory_refresh_lock:
@@ -684,6 +694,7 @@ class SearchEngine:
                 "max_depth": max_depth,
                 "follow_symlinks": follow_symlinks,
                 "include_ignored": include_ignored,
+                "exclude_shots": exclude_shots,
             },
             daemon=True,
         )
@@ -697,6 +708,7 @@ class SearchEngine:
         max_depth: int | None,
         follow_symlinks: bool,
         include_ignored: bool = True,
+        exclude_shots: bool = True,
     ) -> None:
         """Rebuild a stale inventory snapshot without blocking the active search."""
         try:
@@ -708,6 +720,7 @@ class SearchEngine:
                 progress_callback=None,
                 cancel_event=self._shutdown_event,
                 include_ignored=include_ignored,
+                exclude_shots=exclude_shots,
             )
             if snapshot is None:
                 return
@@ -727,6 +740,7 @@ class SearchEngine:
         progress_callback: Callable[[str], None] | None,
         cancel_event: threading.Event | None,
         include_ignored: bool = True,
+        exclude_shots: bool = True,
     ) -> InventorySnapshot | None:
         """Build a file inventory for repeated scan-based searches."""
         if progress_callback:
@@ -742,6 +756,7 @@ class SearchEngine:
             follow_symlinks,
             cancel_event,
             include_ignored,
+            exclude_shots=exclude_shots,
         ):
             if cancel_event and cancel_event.is_set():
                 return None
@@ -1080,6 +1095,7 @@ class SearchEngine:
         follow_symlinks: bool,
         include_ignored: bool = True,
         context_lines: int = 0,
+        exclude_shots: bool = True,
         progress_callback: Callable[[str], None] | None = None,
         cancel_event: threading.Event | None = None,
         on_limit_reached: Callable[[int], None] | None = None,
@@ -1097,6 +1113,7 @@ class SearchEngine:
             follow_symlinks=follow_symlinks,
             include_ignored=include_ignored,
             context_lines=context_lines,
+            exclude_shots=exclude_shots,
         )
         if progress_callback:
             progress_callback(f"Searching with ripgrep: {directory}")
@@ -1136,6 +1153,7 @@ class SearchEngine:
                 ),
                 follow_symlinks=follow_symlinks,
                 include_ignored=include_ignored,
+                exclude_shots=exclude_shots,
                 progress_callback=progress_callback,
                 cancel_event=cancel_event,
                 on_limit_reached=on_limit_reached,
@@ -1308,6 +1326,7 @@ class SearchEngine:
         follow_symlinks: bool,
         include_ignored: bool = True,
         context_lines: int = 0,
+        exclude_shots: bool = True,
     ) -> list[str]:
         """Build a ripgrep command that preserves this app's file-selection semantics."""
         if self._rg_path is None:
@@ -1335,6 +1354,8 @@ class SearchEngine:
             command.extend(["-g", f"*{ext}"])
         for ext in exclude_types:
             command.extend(["-g", f"!*{ext}"])
+        if exclude_shots:
+            command.extend(["-g", "!shots/"])
 
         pattern = match_plan.raw_term
         if match_plan.mode == SearchMode.SUBSTRING:
@@ -1518,6 +1539,7 @@ class SearchEngine:
         follow_symlinks: bool,
         cancel_event: threading.Event | None,
         include_ignored: bool = True,
+        exclude_shots: bool = True,
         _current_depth: int = 0,
         _seen_realpaths: set[str] | None = None,
         _gitignore_specs: "list[tuple[str, pathspec.PathSpec]] | None" = None,
@@ -1570,6 +1592,8 @@ class SearchEngine:
                         if entry.is_file(follow_symlinks=follow_symlinks):
                             yield (directory, entry)
                         elif entry.is_dir(follow_symlinks=follow_symlinks):
+                            if exclude_shots and entry.name == "shots":
+                                continue
                             subdirs.append(entry)
                     except OSError:
                         continue
@@ -1589,6 +1613,7 @@ class SearchEngine:
                 follow_symlinks,
                 cancel_event,
                 include_ignored,
+                exclude_shots,
                 _current_depth + 1,
                 _seen_realpaths,
                 _gitignore_specs,

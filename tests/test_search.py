@@ -362,12 +362,14 @@ def test_include_ignored_cache_key_separation(tmp_path: Path):
         max_depth=None,
         follow_symlinks=False,
         include_ignored=True,
+        exclude_shots=True,
     )
     cache_key_excluded = InventoryCacheKey(
         directory=str(tmp_path),
         max_depth=None,
         follow_symlinks=False,
         include_ignored=False,
+        exclude_shots=True,
     )
 
     now = _time()
@@ -670,7 +672,11 @@ def test_scan_duration_persisted_and_loaded(tmp_path: Path):
     store = SearchIndexStore(db_path=index_db)
 
     key = InventoryCacheKey(
-        directory=str(tmp_path), max_depth=None, follow_symlinks=False, include_ignored=True
+        directory=str(tmp_path),
+        max_depth=None,
+        follow_symlinks=False,
+        include_ignored=True,
+        exclude_shots=True,
     )
     snapshot = InventorySnapshot(
         files=[
@@ -740,7 +746,11 @@ def test_schema_migration_adds_column(tmp_path: Path):
     # Now open with SearchIndexStore — migration should add the column
     store = SearchIndexStore(db_path=index_db)
     key = InventoryCacheKey(
-        directory=str(tmp_path), max_depth=None, follow_symlinks=False, include_ignored=True
+        directory=str(tmp_path),
+        max_depth=None,
+        follow_symlinks=False,
+        include_ignored=True,
+        exclude_shots=True,
     )
     snapshot = InventorySnapshot(files=[], directories=[], created_at=_time(), scan_duration_s=5.0)
     store.save_snapshot(key, snapshot)
@@ -1411,6 +1421,7 @@ def test_save_snapshot_transaction_safety(tmp_path: Path):
         max_depth=None,
         follow_symlinks=False,
         include_ignored=True,
+        exclude_shots=True,
     )
     now = _time()
     original_snapshot = InventorySnapshot(
