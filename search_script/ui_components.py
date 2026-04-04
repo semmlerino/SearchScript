@@ -488,8 +488,8 @@ class SearchUI(QMainWindow):
                 )
                 return False
 
-        min_size = self._parse_optional_int(self.min_size_entry.text())
-        max_size = self._parse_optional_int(self.max_size_entry.text())
+        min_size = self._parse_size_bytes(self.min_size_entry.text(), self.min_size_unit)
+        max_size = self._parse_size_bytes(self.max_size_entry.text(), self.max_size_unit)
         if min_size is not None and max_size is not None and min_size > max_size:
             QMessageBox.warning(self, "Input Error", "Min size cannot be greater than max size.")
             return False
