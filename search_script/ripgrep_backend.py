@@ -11,7 +11,7 @@ from pathlib import Path
 from queue import Empty, Queue
 
 from .config import SearchError
-from .constants import RIPGREP_PROGRESS_MILESTONE
+from .constants import NFS_MAX_WORKERS_CAP, RIPGREP_PROGRESS_MILESTONE
 from .file_utils import is_nfs_path
 from .models import (
     MatchPlan,
@@ -253,12 +253,15 @@ class RipgrepBackend:
         if self._rg_path is None:
             raise RipgrepUnavailableError("ripgrep is not available")
 
+        thread_count = self.max_workers
+        if is_nfs_path(directory):
+            thread_count = max(thread_count, NFS_MAX_WORKERS_CAP)
         command = [
             self._rg_path,
             "--files",
             "--no-messages",
             "--threads",
-            str(self.max_workers),
+            str(thread_count),
         ]
         if include_ignored:
             command.append("--no-ignore")
@@ -465,6 +468,9 @@ class RipgrepBackend:
         if self._rg_path is None:
             raise SearchError("ripgrep is not available")
 
+        thread_count = self.max_workers
+        if is_nfs_path(directory):
+            thread_count = max(thread_count, NFS_MAX_WORKERS_CAP)
         command = [
             self._rg_path,
             "--json",
@@ -473,7 +479,7 @@ class RipgrepBackend:
             "never",
             "--no-messages",
             "--threads",
-            str(self.max_workers),
+            str(thread_count),
         ]
         if include_ignored:
             command.append("--no-ignore")

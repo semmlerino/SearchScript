@@ -27,6 +27,7 @@ from .constants import (
     FUZZY_PARTIAL_THRESHOLD,
     FUZZY_WORD_BONUS,
     LARGE_FILE_MMAP_THRESHOLD,
+    NFS_MAX_WORKERS_CAP,
 )
 from .file_utils import is_nfs_path
 from .inventory import InventoryManager
@@ -342,9 +343,10 @@ class SearchEngine:
                     )
 
                 # Process in parallel chunks
-                with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=self.max_workers
-                ) as executor:
+                content_workers = self.max_workers
+                if is_nfs_path(directory):
+                    content_workers = max(content_workers, NFS_MAX_WORKERS_CAP)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=content_workers) as executor:
                     for chunk_start in range(
                         0, len(content_entries), CONTENT_SEARCH_POOL_CHUNK_SIZE
                     ):

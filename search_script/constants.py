@@ -27,6 +27,8 @@ FUZZY_WORD_BONUS = 2.0  # boost for whole-word boundary match
 
 # Worker thread scaling
 DEFAULT_MAX_WORKERS_CAP = 48  # max threads for I/O-bound parallel search
+NFS_MAX_WORKERS_CAP = 128  # NFS is latency-bound; more threads hide round-trip delays
+NFS_INVENTORY_WALK_MAX_WORKERS = 128  # parallel directory walk threads on NFS
 
 # Parallel content search
 CONTENT_SEARCH_POOL_CHUNK_SIZE = 200

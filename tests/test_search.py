@@ -1604,18 +1604,28 @@ def test_binary_detection_in_content_read(tmp_path: Path):
     )
 
     # Text-based .usd yields results during content search
-    results = list(engine.search_files(
-        str(tmp_path), "findme", search_within_files=True,
-        search_backend=SearchBackend.PYTHON, include_types=[".usd"],
-    ))
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "findme",
+            search_within_files=True,
+            search_backend=SearchBackend.PYTHON,
+            include_types=[".usd"],
+        )
+    )
     assert len(results) == 1
     assert "scene.usd" in results[0].file_path
 
     # Binary .usd with null bytes yields no results (detected during read)
-    results_bin = list(engine.search_files(
-        str(tmp_path), "findme", search_within_files=True,
-        search_backend=SearchBackend.PYTHON, include_types=[".usd"],
-    ))
+    results_bin = list(
+        engine.search_files(
+            str(tmp_path),
+            "findme",
+            search_within_files=True,
+            search_backend=SearchBackend.PYTHON,
+            include_types=[".usd"],
+        )
+    )
     # scene.usd still matches, binary.usd does not
     paths = [r.file_path for r in results_bin]
     assert any("scene.usd" in p for p in paths)
@@ -1915,35 +1925,24 @@ def test_parallel_walk_symlink_cycle_safe(tmp_path: Path) -> None:
     assert str(b_dir / "real_file.txt") in result_paths
 
 
+def _nfs_true(_path: str) -> bool:
+    return True
+
+
 def test_is_nfs_path_detection(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """is_nfs_path should detect NFS mounts from /proc/self/mountinfo."""
-    from search_script import file_utils
-
-    # Clear lru_cache from previous calls
-    file_utils._parse_nfs_mount_points.cache_clear()
-
-    fake_mountinfo = (
-        "25 1 8:1 / / rw - ext4 /dev/sda1 rw\n"
-        f"30 1 0:40 / {tmp_path} rw - nfs4 server:/export rw\n"
-    )
+    """is_nfs_path should detect NFS mounts from parsed mount points."""
     monkeypatch.setattr(
-        "builtins.open",
-        lambda path, *a, **kw: __import__("io").StringIO(fake_mountinfo)
-        if path == "/proc/self/mountinfo"
-        else open(path, *a, **kw),  # noqa: SIM115
+        "search_script.file_utils._parse_nfs_mount_points",
+        lambda: frozenset({str(tmp_path)}),
     )
-    file_utils._parse_nfs_mount_points.cache_clear()
 
     assert is_nfs_path(str(tmp_path / "subdir" / "file.txt"))
     assert not is_nfs_path("/usr/local/bin")
 
-    # Cleanup: clear cache so other tests aren't affected
-    file_utils._parse_nfs_mount_points.cache_clear()
-
 
 def test_nfs_path_skips_mmap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """On NFS paths, large files should use _search_small_file instead of _search_large_file."""
-    monkeypatch.setattr("search_script.search_engine.is_nfs_path", lambda _path: True)
+    monkeypatch.setattr("search_script.search_engine.is_nfs_path", _nfs_true)
 
     big_file = tmp_path / "large.txt"
     # Create a file larger than LARGE_FILE_MMAP_THRESHOLD (1MB)
@@ -1961,3 +1960,29 @@ def test_nfs_path_skips_mmap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     )
     assert len(results) > 0
     assert all("large.txt" in r.file_path for r in results)
+
+
+def test_nfs_scales_walk_workers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """On NFS paths, inventory walk and content search should complete with scaled workers."""
+    monkeypatch.setattr("search_script.inventory.is_nfs_path", _nfs_true)
+    monkeypatch.setattr("search_script.search_engine.is_nfs_path", _nfs_true)
+
+    (tmp_path / "hello.txt").write_text("world\n")
+    (tmp_path / "subdir").mkdir()
+    (tmp_path / "subdir" / "deep.txt").write_text("world\n")
+
+    engine = SearchEngine()
+    # Filename search (goes through inventory with NFS worker count)
+    fname_results = list(engine.search_files(str(tmp_path), "hello", search_within_files=False))
+    assert len(fname_results) == 1
+
+    # Content search (uses NFS-scaled ThreadPoolExecutor)
+    content_results = list(
+        engine.search_files(
+            str(tmp_path),
+            "world",
+            search_within_files=True,
+            search_backend=SearchBackend.PYTHON,
+        )
+    )
+    assert len(content_results) == 2

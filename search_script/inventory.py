@@ -21,10 +21,12 @@ from .constants import (
     INVENTORY_CACHE_TTL_S,
     INVENTORY_PROGRESS_MILESTONE,
     INVENTORY_WALK_MAX_WORKERS,
+    NFS_INVENTORY_WALK_MAX_WORKERS,
     PERSISTENT_INDEX_MAX_AGE_CEILING_S,
     PERSISTENT_INDEX_MAX_AGE_S,
     SPOT_CHECK_SAMPLE_SIZE,
 )
+from .file_utils import is_nfs_path
 from .search_index import (
     InventoryCacheKey,
     InventoryEntry,
@@ -405,7 +407,10 @@ class InventoryManager:
 
         Returns (files, directories) lists directly — not a generator.
         """
-        max_workers = min(INVENTORY_WALK_MAX_WORKERS, (os.cpu_count() or 4) * 2)
+        if is_nfs_path(directory):
+            max_workers = NFS_INVENTORY_WALK_MAX_WORKERS
+        else:
+            max_workers = min(INVENTORY_WALK_MAX_WORKERS, (os.cpu_count() or 4) * 2)
 
         all_files: list[InventoryEntry] = []
         all_dirs: list[str] = []
@@ -418,9 +423,9 @@ class InventoryManager:
         if progress_callback:
             progress_callback(f"Building file inventory: {directory}")
 
-        results_queue: queue.Queue[
-            tuple[list[InventoryEntry], list[str], list[_WalkWorkItem]]
-        ] = queue.Queue()
+        results_queue: queue.Queue[tuple[list[InventoryEntry], list[str], list[_WalkWorkItem]]] = (
+            queue.Queue()
+        )
 
         pending_count = 0
         count_lock = threading.Lock()
