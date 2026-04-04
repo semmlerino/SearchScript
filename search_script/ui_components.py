@@ -6,7 +6,7 @@ import os
 import re
 
 from PySide6.QtCore import QPoint, QSettings, Qt, Signal
-from PySide6.QtGui import QCloseEvent, QColor
+from PySide6.QtGui import QCloseEvent, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -53,6 +53,7 @@ class ResultTreeWidgetItem(QTreeWidgetItem):
 class SearchUI(QMainWindow):
     search_requested = Signal(dict)  # emitted with search_params dict
     search_cancelled = Signal()
+    refresh_requested = Signal()  # emitted when user requests cache-clear + re-search
     result_double_clicked = Signal(dict)  # emitted with serialized result dict
     open_folder_requested = Signal(str)  # emitted with file_path string
 
@@ -98,6 +99,8 @@ class SearchUI(QMainWindow):
         self._create_progress_row()
         self._create_button_row()
         self._create_results_tree()
+
+        QShortcut(QKeySequence(Qt.Key.Key_F5), self, self._on_refresh_clicked)
 
     def _create_directory_row(self):
         """Create directory selection row."""
@@ -270,6 +273,13 @@ class SearchUI(QMainWindow):
         self.cancel_button.setEnabled(False)
         row.addWidget(self.cancel_button)
 
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.setFixedWidth(120)
+        self.refresh_button.setToolTip("Clear cache and re-search (F5)")
+        self.refresh_button.clicked.connect(self._on_refresh_clicked)
+        self.refresh_button.setEnabled(False)
+        row.addWidget(self.refresh_button)
+
         self.export_button = QPushButton("Export")
         self.export_button.setFixedWidth(120)
         self.export_button.clicked.connect(self.export_results)
@@ -351,6 +361,10 @@ class SearchUI(QMainWindow):
     def _on_cancel_clicked(self):
         """Handle cancel button click."""
         self.search_cancelled.emit()
+
+    def _on_refresh_clicked(self):
+        """Handle refresh button / F5 shortcut."""
+        self.refresh_requested.emit()
 
     def _validate_inputs(self) -> bool:
         """Validate user inputs."""
@@ -477,8 +491,10 @@ class SearchUI(QMainWindow):
         if not searching:
             has_results = self.results_tree.topLevelItemCount() > 0
             self.export_button.setEnabled(has_results)
+            self.refresh_button.setEnabled(has_results)
         else:
             self.export_button.setEnabled(False)
+            self.refresh_button.setEnabled(False)
 
         if searching:
             self.progress_bar.setRange(0, 0)

@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 import os
@@ -32,6 +33,7 @@ class InventorySnapshot:
     files: list[InventoryEntry]
     directories: list[str]
     created_at: float
+    scan_duration_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -73,7 +75,7 @@ class SearchIndexStore:
                 conn.row_factory = sqlite3.Row
                 metadata = conn.execute(
                     """
-                    SELECT created_at
+                    SELECT created_at, scan_duration_s
                     FROM inventories
                     WHERE cache_key = ?
                     """,
@@ -83,6 +85,7 @@ class SearchIndexStore:
                     return None
 
                 created_at = float(metadata["created_at"])
+                scan_duration_s = float(metadata["scan_duration_s"] or 0.0)
                 is_fresh = time() - created_at <= max_age_s
                 if not is_fresh and not allow_stale:
                     return None
@@ -127,6 +130,7 @@ class SearchIndexStore:
                 files=files,
                 directories=directories,
                 created_at=created_at,
+                scan_duration_s=scan_duration_s,
             ),
             is_fresh=is_fresh,
         )
@@ -150,14 +154,16 @@ class SearchIndexStore:
                         directory,
                         max_depth,
                         follow_symlinks,
-                        created_at
+                        created_at,
+                        scan_duration_s
                     )
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(cache_key) DO UPDATE SET
                         directory = excluded.directory,
                         max_depth = excluded.max_depth,
                         follow_symlinks = excluded.follow_symlinks,
-                        created_at = excluded.created_at
+                        created_at = excluded.created_at,
+                        scan_duration_s = excluded.scan_duration_s
                     """,
                     (
                         serialized_key,
@@ -165,6 +171,7 @@ class SearchIndexStore:
                         cache_key.max_depth,
                         int(cache_key.follow_symlinks),
                         snapshot.created_at,
+                        snapshot.scan_duration_s,
                     ),
                 )
                 conn.execute(
@@ -211,6 +218,20 @@ class SearchIndexStore:
                 self._prune_old_snapshots(conn)
         except sqlite3.Error as exc:
             self.logger.warning(f"Failed to save persistent inventory index: {exc}")
+
+    def delete_snapshot(self, cache_key: InventoryCacheKey) -> None:
+        """Remove a persisted snapshot and all its related rows."""
+        if not self._ensure_schema():
+            return
+
+        serialized_key = self._serialize_cache_key(cache_key)
+        try:
+            with self._lock, sqlite3.connect(self.db_path) as conn:
+                conn.execute("DELETE FROM inventories WHERE cache_key = ?", (serialized_key,))
+                conn.execute("DELETE FROM inventory_dirs WHERE cache_key = ?", (serialized_key,))
+                conn.execute("DELETE FROM inventory_entries WHERE cache_key = ?", (serialized_key,))
+        except sqlite3.Error as exc:
+            self.logger.warning(f"Failed to delete persistent inventory snapshot: {exc}")
 
     def _default_db_path(self) -> Path:
         """Return a platform-appropriate cache location for the SQLite index."""
@@ -278,6 +299,11 @@ class SearchIndexStore:
                         ON inventory_entries (cache_key);
                         """
                     )
+                    # Idempotent migration: add scan_duration_s column
+                    with contextlib.suppress(sqlite3.OperationalError):
+                        conn.execute(
+                            "ALTER TABLE inventories ADD COLUMN scan_duration_s REAL DEFAULT 0.0"
+                        )
             except (OSError, sqlite3.Error) as exc:
                 self.logger.warning(f"Persistent inventory index unavailable: {exc}")
                 self._available = False

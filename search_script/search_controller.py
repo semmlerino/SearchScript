@@ -34,6 +34,7 @@ class SearchController:
         self.result_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.search_was_truncated = False
         self.search_result_limit: int | None = None
+        self._last_search_params: dict[str, Any] | None = None
 
         # Setup callbacks
         self._setup_callbacks()
@@ -44,6 +45,7 @@ class SearchController:
         """Connect UI signals to controller slots."""
         self.ui.search_requested.connect(self._start_search)
         self.ui.search_cancelled.connect(self._cancel_search)
+        self.ui.refresh_requested.connect(self._refresh_search)
         self.ui.result_double_clicked.connect(self._open_file)
         self.ui.open_folder_requested.connect(self._open_containing_folder)
         self.ui.clear_dates_btn.clicked.connect(self._clear_dates)
@@ -94,6 +96,7 @@ class SearchController:
         modified_after, modified_before = self._build_modified_date_filters()
         search_params["modified_after"] = modified_after
         search_params["modified_before"] = modified_before
+        self._last_search_params = dict(search_params)
 
         # Reset UI state
         self.ui.set_search_state(True)
@@ -292,6 +295,20 @@ class SearchController:
             if batch:
                 self.ui.add_results_batch(batch)
             return None
+
+    def _refresh_search(self) -> None:
+        """Clear the inventory cache and re-run the last search."""
+        if self._last_search_params is None:
+            return
+        self._cancel_search()
+        params = self._last_search_params
+        self.search_engine.clear_inventory_cache(
+            directory=params["directory"],
+            max_depth=params.get("max_depth"),
+            follow_symlinks=params.get("follow_symlinks", False),
+            include_ignored=params.get("include_ignored", True),
+        )
+        self._start_search(dict(params))
 
     def _cancel_search(self):
         """Cancel the current search operation."""

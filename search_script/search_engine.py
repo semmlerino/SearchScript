@@ -31,6 +31,8 @@ import pathspec
 
 from .config import DirectoryError, FileAccessError, SearchError, ValidationError
 from .constants import (
+    ADAPTIVE_TTL_DIVISOR,
+    ADAPTIVE_TTL_SCAN_THRESHOLD_S,
     CONTENT_SEARCH_POOL_CHUNK_SIZE,
     FUZZY_EXACT_BONUS,
     FUZZY_FULL_THRESHOLD,
@@ -41,8 +43,10 @@ from .constants import (
     INVENTORY_PROGRESS_MILESTONE,
     LARGE_FILE_MMAP_THRESHOLD,
     LINE_CONTENT_MAX_CHARS,
+    PERSISTENT_INDEX_MAX_AGE_CEILING_S,
     PERSISTENT_INDEX_MAX_AGE_S,
     RIPGREP_PROGRESS_MILESTONE,
+    SPOT_CHECK_SAMPLE_SIZE,
 )
 from .search_index import (
     InventoryCacheKey,
@@ -538,14 +542,16 @@ class SearchEngine:
 
         load_result = self._index_store.load_snapshot(
             cache_key,
-            max_age_s=PERSISTENT_INDEX_MAX_AGE_S,
+            max_age_s=PERSISTENT_INDEX_MAX_AGE_CEILING_S,
             allow_stale=True,
         )
         if load_result is not None:
             snapshot = load_result.snapshot
+            effective_ttl = self._compute_effective_ttl(snapshot)
+            age = time() - snapshot.created_at
             with self._inventory_cache_lock:
                 self._inventory_cache[cache_key] = snapshot
-            if load_result.is_fresh:
+            if age <= effective_ttl:
                 if progress_callback:
                     progress_callback(
                         f"Loaded persistent file inventory ({len(snapshot.files)} files)"
@@ -554,6 +560,14 @@ class SearchEngine:
             stale_snapshot = snapshot
 
         if stale_snapshot is not None:
+            if self._spot_check_snapshot(stale_snapshot):
+                stale_snapshot.created_at = time()
+                self._store_inventory_snapshot(cache_key, stale_snapshot)
+                if progress_callback:
+                    progress_callback(
+                        f"Reusing validated file inventory ({len(stale_snapshot.files)} files)"
+                    )
+                return stale_snapshot
             if progress_callback:
                 progress_callback(self.BACKGROUND_REFRESH_STATUS)
             self._schedule_inventory_refresh(
@@ -585,6 +599,49 @@ class SearchEngine:
     ) -> bool:
         """Check whether a cached snapshot can be reused safely enough."""
         return time() - snapshot.created_at <= INVENTORY_CACHE_TTL_S
+
+    def _compute_effective_ttl(self, snapshot: InventorySnapshot) -> float:
+        """Return an adaptive persistent TTL based on how long the scan took."""
+        if snapshot.scan_duration_s < ADAPTIVE_TTL_SCAN_THRESHOLD_S:
+            return float(PERSISTENT_INDEX_MAX_AGE_S)
+        scaled = PERSISTENT_INDEX_MAX_AGE_S * max(
+            1.0, snapshot.scan_duration_s / ADAPTIVE_TTL_DIVISOR
+        )
+        return min(scaled, float(PERSISTENT_INDEX_MAX_AGE_CEILING_S))
+
+    def _spot_check_snapshot(self, snapshot: InventorySnapshot) -> bool:
+        """Sample recently-modified files and verify mtime+size still match.
+
+        Returns True if all sampled files pass (snapshot likely still valid).
+        """
+        sorted_files = sorted(snapshot.files, key=lambda e: e.mod_time, reverse=True)
+        sample = sorted_files[:SPOT_CHECK_SAMPLE_SIZE]
+        for entry in sample:
+            try:
+                st = os.stat(entry.file_path)
+            except OSError:
+                return False
+            if st.st_mtime != entry.mod_time or st.st_size != entry.file_size:
+                return False
+        return True
+
+    def clear_inventory_cache(
+        self,
+        directory: str,
+        max_depth: int | None,
+        follow_symlinks: bool,
+        include_ignored: bool,
+    ) -> None:
+        """Public API: evict a specific inventory from both caches."""
+        cache_key = InventoryCacheKey(
+            directory=os.path.realpath(directory),
+            max_depth=max_depth,
+            follow_symlinks=follow_symlinks,
+            include_ignored=include_ignored,
+        )
+        with self._inventory_cache_lock:
+            self._inventory_cache.pop(cache_key, None)
+        self._index_store.delete_snapshot(cache_key)
 
     def _store_inventory_snapshot(
         self,
@@ -673,6 +730,7 @@ class SearchEngine:
         if progress_callback:
             progress_callback(f"Building file inventory: {directory}")
 
+        scan_start = time()
         files: list[InventoryEntry] = []
         directories: list[str] = []
         files_indexed = 0
@@ -712,6 +770,7 @@ class SearchEngine:
             files=files,
             directories=directories,
             created_at=time(),
+            scan_duration_s=time() - scan_start,
         )
 
     def _check_cached_inventory_filters(
@@ -840,7 +899,6 @@ class SearchEngine:
             return None
         return None
 
-
     def _score_fuzzy_match(
         self, text: str, normalized_term: str, *, allow_partial_fuzzy: bool
     ) -> float | None:
@@ -873,7 +931,6 @@ class SearchEngine:
                 score += FUZZY_WORD_BONUS
 
         return score if score >= threshold else None
-
 
     def _check_file_filters(
         self,
@@ -919,7 +976,6 @@ class SearchEngine:
         except OSError:
             return None
         return None
-
 
     def _search_file_content(
         self,
@@ -1431,7 +1487,6 @@ class SearchEngine:
             self.logger.debug(f"Skipping binary file: {file_path}")
         except OSError as e:
             raise FileAccessError(f"Error reading file {file_path}: {e}") from e
-
 
     def _update_cached_inventory_progress(
         self,

@@ -5,8 +5,12 @@ LINE_CONTENT_MAX_CHARS = 2000
 LARGE_FILE_MMAP_THRESHOLD = 1024 * 1024  # 1 MB
 
 # Inventory / caching
-INVENTORY_CACHE_TTL_S = 10.0  # in-memory freshness window
-PERSISTENT_INDEX_MAX_AGE_S = 300  # SQLite index max age (5 minutes)
+INVENTORY_CACHE_TTL_S = 60.0  # in-memory freshness window
+PERSISTENT_INDEX_MAX_AGE_S = 300  # SQLite index base max age (5 minutes)
+PERSISTENT_INDEX_MAX_AGE_CEILING_S = 1800  # adaptive TTL cap (30 minutes)
+ADAPTIVE_TTL_SCAN_THRESHOLD_S = 1.0  # scans faster than this use base TTL
+ADAPTIVE_TTL_DIVISOR = 2.5  # scaling factor for slow-scan TTL
+SPOT_CHECK_SAMPLE_SIZE = 30  # files to stat-check before full rescan
 INVENTORY_CACHE_MAX_ENTRIES = 6  # max in-memory cache slots
 
 # Progress reporting intervals

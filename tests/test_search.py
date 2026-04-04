@@ -313,7 +313,8 @@ def test_search_engine_refreshes_stale_persistent_index_in_background(tmp_path: 
             (PERSISTENT_INDEX_MAX_AGE_S + 1,),
         )
 
-    # Add a file that the stale snapshot does not know about.
+    # Modify an existing file so spot-check detects the change, plus add a new file.
+    (search_root / "one.txt").write_text("modified", encoding="utf-8")
     (search_root / "two.txt").write_text("hello", encoding="utf-8")
 
     statuses: list[str] = []
@@ -606,6 +607,298 @@ def test_controller_build_modified_date_filters_includes_full_day(qapp: QApplica
 
     assert modified_after == datetime(2025, 1, 1, 0, 0, 0)
     assert modified_before == datetime(2025, 1, 1, 23, 59, 59, 999999)
+    close_widget(controller.ui)
+
+
+# --- Caching & TTL tests ---
+
+
+def test_in_memory_cache_fresh_at_59s(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """In-memory snapshot is still fresh at 59s elapsed (TTL = 60s)."""
+    from search_script.search_index import InventoryEntry
+
+    engine = SearchEngine()
+    snapshot = InventorySnapshot(
+        files=[
+            InventoryEntry(
+                file_path=str(tmp_path / "a.txt"),
+                parent_dir=str(tmp_path),
+                file_name="a.txt",
+                file_lower="a.txt",
+                mod_time=0.0,
+                file_size=0,
+            )
+        ],
+        directories=[str(tmp_path)],
+        created_at=0.0,
+    )
+    from time import time as _real_time
+
+    frozen = _real_time()
+    snapshot.created_at = frozen - 59.0
+    monkeypatch.setattr("search_script.search_engine.time", lambda: frozen)
+    assert engine._is_inventory_snapshot_fresh(snapshot) is True  # pyright: ignore[reportPrivateUsage]
+
+
+def test_fast_scan_uses_base_ttl():
+    engine = SearchEngine()
+    snapshot = InventorySnapshot(files=[], directories=[], created_at=0.0, scan_duration_s=0.5)
+    assert engine._compute_effective_ttl(snapshot) == 300.0  # pyright: ignore[reportPrivateUsage]
+
+
+def test_slow_scan_scales_ttl():
+    engine = SearchEngine()
+    snapshot = InventorySnapshot(files=[], directories=[], created_at=0.0, scan_duration_s=10.0)
+    assert engine._compute_effective_ttl(snapshot) == 1200.0  # pyright: ignore[reportPrivateUsage]
+
+
+def test_very_slow_scan_caps_at_ceiling():
+    engine = SearchEngine()
+    snapshot = InventorySnapshot(files=[], directories=[], created_at=0.0, scan_duration_s=30.0)
+    assert engine._compute_effective_ttl(snapshot) == 1800.0  # pyright: ignore[reportPrivateUsage]
+
+
+def test_scan_duration_persisted_and_loaded(tmp_path: Path):
+    """scan_duration_s round-trips through SQLite."""
+    from time import time as _time
+
+    from search_script.search_index import InventoryEntry
+
+    index_db = tmp_path / "inventory.sqlite3"
+    store = SearchIndexStore(db_path=index_db)
+
+    key = InventoryCacheKey(
+        directory=str(tmp_path), max_depth=None, follow_symlinks=False, include_ignored=True
+    )
+    snapshot = InventorySnapshot(
+        files=[
+            InventoryEntry(
+                file_path=str(tmp_path / "f.txt"),
+                parent_dir=str(tmp_path),
+                file_name="f.txt",
+                file_lower="f.txt",
+                mod_time=0.0,
+                file_size=0,
+            )
+        ],
+        directories=[str(tmp_path)],
+        created_at=_time(),
+        scan_duration_s=12.5,
+    )
+    store.save_snapshot(key, snapshot)
+
+    loaded = store.load_snapshot(key, max_age_s=9999)
+    assert loaded is not None
+    assert loaded.snapshot.scan_duration_s == pytest.approx(  # pyright: ignore[reportUnknownMemberType]
+        12.5
+    )
+
+
+def test_schema_migration_adds_column(tmp_path: Path):
+    """Old DB without scan_duration_s column still works after migration."""
+    from time import time as _time
+
+    index_db = tmp_path / "inventory.sqlite3"
+
+    # Create an old-schema DB without the column
+    with sqlite3.connect(str(index_db)) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.executescript(
+            """
+            CREATE TABLE inventories (
+                cache_key TEXT PRIMARY KEY,
+                directory TEXT NOT NULL,
+                max_depth INTEGER,
+                follow_symlinks INTEGER NOT NULL,
+                created_at REAL NOT NULL
+            );
+            CREATE TABLE inventory_dirs (
+                cache_key TEXT NOT NULL,
+                dir_path TEXT NOT NULL,
+                PRIMARY KEY (cache_key, dir_path)
+            );
+            CREATE TABLE inventory_entries (
+                cache_key TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                parent_dir TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                file_lower TEXT NOT NULL,
+                mod_time REAL NOT NULL,
+                file_size INTEGER NOT NULL,
+                PRIMARY KEY (cache_key, file_path)
+            );
+            """
+        )
+        # Insert a row in the old schema
+        conn.execute(
+            "INSERT INTO inventories VALUES (?, ?, ?, ?, ?)",
+            ('{"directory":"x"}', "x", None, 0, _time()),
+        )
+
+    # Now open with SearchIndexStore — migration should add the column
+    store = SearchIndexStore(db_path=index_db)
+    key = InventoryCacheKey(
+        directory=str(tmp_path), max_depth=None, follow_symlinks=False, include_ignored=True
+    )
+    snapshot = InventorySnapshot(files=[], directories=[], created_at=_time(), scan_duration_s=5.0)
+    store.save_snapshot(key, snapshot)
+
+    loaded = store.load_snapshot(key, max_age_s=9999)
+    assert loaded is not None
+    assert loaded.snapshot.scan_duration_s == pytest.approx(  # pyright: ignore[reportUnknownMemberType]
+        5.0
+    )
+
+
+def test_spot_check_extends_ttl_when_unchanged(tmp_path: Path):
+    """Spot-check passes → no full rescan, snapshot reused."""
+    search_root = tmp_path / "root"
+    search_root.mkdir()
+    index_db = tmp_path / "inventory.sqlite3"
+    for i in range(5):
+        (search_root / f"file{i}.txt").write_text("hello", encoding="utf-8")
+
+    engine = SearchEngine(index_db_path=index_db)
+    # First search populates cache
+    list(engine.search_files(str(search_root), "file", search_within_files=False))
+
+    # Age the persistent entry past the adaptive TTL ceiling so it's stale
+    from search_script.constants import PERSISTENT_INDEX_MAX_AGE_CEILING_S
+
+    with sqlite3.connect(str(index_db)) as conn:
+        conn.execute(
+            "UPDATE inventories SET created_at = created_at - ?",
+            (PERSISTENT_INDEX_MAX_AGE_CEILING_S + 1,),
+        )
+    # Flush in-memory cache
+    engine._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]
+
+    build_calls = 0
+    original_build = engine._build_inventory_snapshot  # pyright: ignore[reportPrivateUsage]
+
+    def counting_build(*args: Any, **kwargs: Any) -> Any:
+        nonlocal build_calls
+        build_calls += 1
+        return original_build(*args, **kwargs)
+
+    engine._build_inventory_snapshot = counting_build  # type: ignore[method-assign]
+
+    # Second search — spot-check should pass, no rebuild
+    results = list(engine.search_files(str(search_root), "file", search_within_files=False))
+    assert len(results) == 5
+    assert build_calls == 0
+
+
+def test_spot_check_triggers_rescan_on_mtime_change(tmp_path: Path):
+    """Spot-check fails on mtime change → background rescan triggered."""
+    search_root = tmp_path / "root"
+    search_root.mkdir()
+    index_db = tmp_path / "inventory.sqlite3"
+    target = search_root / "file.txt"
+    target.write_text("hello", encoding="utf-8")
+
+    engine = SearchEngine(index_db_path=index_db)
+    list(engine.search_files(str(search_root), "file", search_within_files=False))
+
+    # Age the persistent entry past ceiling
+    from search_script.constants import PERSISTENT_INDEX_MAX_AGE_CEILING_S
+
+    with sqlite3.connect(str(index_db)) as conn:
+        conn.execute(
+            "UPDATE inventories SET created_at = created_at - ?",
+            (PERSISTENT_INDEX_MAX_AGE_CEILING_S + 1,),
+        )
+    engine._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]
+
+    # Modify the file so mtime changes
+    target.write_text("modified", encoding="utf-8")
+
+    statuses: list[str] = []
+    list(
+        engine.search_files(
+            str(search_root),
+            "file",
+            search_within_files=False,
+            progress_callback=statuses.append,
+        )
+    )
+    assert engine.BACKGROUND_REFRESH_STATUS in statuses
+
+
+def test_spot_check_triggers_rescan_on_delete(tmp_path: Path):
+    """Spot-check fails on deleted file → background rescan triggered."""
+    search_root = tmp_path / "root"
+    search_root.mkdir()
+    index_db = tmp_path / "inventory.sqlite3"
+    target = search_root / "file.txt"
+    target.write_text("hello", encoding="utf-8")
+
+    engine = SearchEngine(index_db_path=index_db)
+    list(engine.search_files(str(search_root), "file", search_within_files=False))
+
+    from search_script.constants import PERSISTENT_INDEX_MAX_AGE_CEILING_S
+
+    with sqlite3.connect(str(index_db)) as conn:
+        conn.execute(
+            "UPDATE inventories SET created_at = created_at - ?",
+            (PERSISTENT_INDEX_MAX_AGE_CEILING_S + 1,),
+        )
+    engine._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]
+
+    # Delete the file
+    target.unlink()
+
+    statuses: list[str] = []
+    list(
+        engine.search_files(
+            str(search_root),
+            "file",
+            search_within_files=False,
+            progress_callback=statuses.append,
+        )
+    )
+    assert engine.BACKGROUND_REFRESH_STATUS in statuses
+
+
+def test_refresh_clears_cache_and_retriggers(qapp: QApplication):
+    """Refresh clears cache and re-runs the search."""
+    controller = SearchController()
+    search_called: list[dict[str, Any]] = []
+
+    def capture_start(params: dict[str, Any]) -> None:
+        search_called.append(dict(params))
+
+    controller._start_search = capture_start  # type: ignore[method-assign]
+
+    # Simulate having run a search by setting _last_search_params
+    controller._last_search_params = {  # pyright: ignore[reportPrivateUsage]
+        "directory": "/tmp/test",
+        "search_term": "hello",
+        "max_depth": None,
+        "follow_symlinks": False,
+        "include_ignored": True,
+    }
+
+    cache_cleared = False
+
+    def track_clear(**kwargs: Any) -> None:
+        nonlocal cache_cleared
+        cache_cleared = True
+
+    controller.search_engine.clear_inventory_cache = track_clear  # type: ignore[method-assign]
+
+    controller._refresh_search()  # pyright: ignore[reportPrivateUsage]
+
+    assert cache_cleared
+    assert len(search_called) == 1
+    assert search_called[0]["directory"] == "/tmp/test"
+    close_widget(controller.ui)
+
+
+def test_refresh_button_disabled_before_search(qapp: QApplication):
+    """Refresh button starts disabled and enables after results."""
+    controller = SearchController()
+    assert not controller.ui.refresh_button.isEnabled()
     close_widget(controller.ui)
 
 
