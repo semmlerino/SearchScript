@@ -106,7 +106,7 @@ class SearchUI(QMainWindow):
 
     def _setup_ui(self) -> None:
         """Initialize the UI components."""
-        self.setWindowTitle("Enhanced File Search Tool")
+        self.setWindowTitle("SearchScript")
         self.resize(1200, 700)
 
         central_widget = QWidget()
@@ -137,6 +137,8 @@ class SearchUI(QMainWindow):
         self._create_results_tree()
 
         QShortcut(QKeySequence(Qt.Key.Key_F5), self, self._on_refresh_clicked)
+        QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self._on_cancel_clicked)
+        QShortcut(QKeySequence("Ctrl+L"), self, lambda: self.dir_entry.setFocus())
 
     def _create_directory_row(self):
         """Create directory selection row."""
@@ -194,23 +196,16 @@ class SearchUI(QMainWindow):
         self.within_checkbox = QCheckBox("Search within file contents")
         self._main_layout.addWidget(self.within_checkbox)
 
-        include_row = QHBoxLayout()
-        include_row.addWidget(QLabel("Include file types (e.g., .txt, .py):"))
-        include_row.addStretch()
-        self._main_layout.addLayout(include_row)
-
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Include:"))
         self.include_entry = QLineEdit()
         self.include_entry.setPlaceholderText(".txt, .py, .js")
-        self._main_layout.addWidget(self.include_entry)
-
-        exclude_row = QHBoxLayout()
-        exclude_row.addWidget(QLabel("Exclude file types (e.g., .log, .tmp):"))
-        exclude_row.addStretch()
-        self._main_layout.addLayout(exclude_row)
-
+        filter_row.addWidget(self.include_entry, stretch=1)
+        filter_row.addWidget(QLabel("Exclude:"))
         self.exclude_entry = QLineEdit()
         self.exclude_entry.setPlaceholderText(".log, .tmp")
-        self._main_layout.addWidget(self.exclude_entry)
+        filter_row.addWidget(self.exclude_entry, stretch=1)
+        self._main_layout.addLayout(filter_row)
 
     def _create_advanced_filters_row(self) -> None:
         """Create advanced filters row."""
@@ -313,13 +308,13 @@ class SearchUI(QMainWindow):
         self.search_button = QPushButton("Search")
         self.search_button.setFixedWidth(120)
         self.search_button.setDefault(True)
-        self.search_button.setStyleSheet("background-color: blue; color: white;")
+        self.search_button.setStyleSheet("background-color: #0078d4; color: white;")
         self.search_button.clicked.connect(self._on_search_clicked)
         row.addWidget(self.search_button)
 
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.setFixedWidth(120)
-        self.cancel_button.setStyleSheet("background-color: red; color: white;")
+        self.cancel_button.setStyleSheet("background-color: #d32f2f; color: white;")
         self.cancel_button.clicked.connect(self._on_cancel_clicked)
         self.cancel_button.setEnabled(False)
         row.addWidget(self.cancel_button)
@@ -342,6 +337,12 @@ class SearchUI(QMainWindow):
 
     def _create_results_tree(self):
         """Create results QTreeWidget."""
+        self._filter_bar = QLineEdit()
+        self._filter_bar.setPlaceholderText("Filter results...")
+        self._filter_bar.textChanged.connect(self._apply_result_filter)
+        self._filter_bar.setClearButtonEnabled(True)
+        self._main_layout.addWidget(self._filter_bar)
+
         columns = ["File Path", "Matching Line", "Size", "Last Modified"]
         self.results_tree = QTreeWidget()
         self.results_tree.setColumnCount(len(columns))
@@ -366,7 +367,16 @@ class SearchUI(QMainWindow):
         self.results_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.results_tree.customContextMenuRequested.connect(self._show_context_menu)  # pyright: ignore[reportUnknownMemberType,reportArgumentType]
 
+        self.results_tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
+
         self._file_group_items: dict[str, ResultTreeWidgetItem] = {}
+        self._file_group_match_counts: dict[str, int] = {}
+
+        self._empty_label = QLabel("Enter a search term above")
+        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_label.setStyleSheet("color: #888; font-size: 14px;")
+        self._empty_label.setParent(self.results_tree.viewport())
+        self._empty_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
         self._main_layout.addWidget(self.results_tree, stretch=1)
 
@@ -482,7 +492,11 @@ class SearchUI(QMainWindow):
         """Handle result double-click."""
         result = item.data(0, RESULT_ROLE)
         if result is None:
-            return
+            parent = item.parent()
+            if parent is not None:  # pyright: ignore[reportUnnecessaryComparison]
+                result = parent.data(0, RESULT_ROLE)
+            if result is None:
+                return
         if isinstance(result, dict) and result.get("is_group"):  # pyright: ignore[reportUnknownMemberType]
             item.setExpanded(not item.isExpanded())
             return
@@ -496,10 +510,19 @@ class SearchUI(QMainWindow):
         self.results_tree.setCurrentItem(item)
         menu = QMenu(self)
         result = item.data(0, RESULT_ROLE)  # pyright: ignore[reportUnknownMemberType]
+        if result is None:
+            parent = item.parent()
+            if parent is not None:  # pyright: ignore[reportUnnecessaryComparison]
+                result = parent.data(0, RESULT_ROLE)  # pyright: ignore[reportUnknownMemberType]
         if isinstance(result, dict) and result.get("is_group"):  # pyright: ignore[reportUnknownMemberType]
             toggle_text = "Collapse" if item.isExpanded() else "Expand"
             toggle_action = menu.addAction(toggle_text)
             toggle_action.triggered.connect(lambda: item.setExpanded(not item.isExpanded()))
+            expand_all = menu.addAction("Expand All")
+            expand_all.triggered.connect(self.results_tree.expandAll)
+            collapse_all = menu.addAction("Collapse All")
+            collapse_all.triggered.connect(self.results_tree.collapseAll)
+            menu.addSeparator()
         open_action = menu.addAction("Open Containing Folder")
         open_action.triggered.connect(self._on_open_containing_folder)
         copy_path_action = menu.addAction("Copy File Path")
@@ -516,29 +539,38 @@ class SearchUI(QMainWindow):
         if not item:
             return
         result = item.data(0, RESULT_ROLE) or {}  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        if not result:
+            parent = item.parent()
+            if parent is not None:  # pyright: ignore[reportUnnecessaryComparison]
+                result = parent.data(0, RESULT_ROLE) or {}  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
         file_path = result.get("file_path", item.text(0))  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
         self.open_folder_requested.emit(file_path)  # pyright: ignore[reportUnknownArgumentType]
 
     def _copy_file_path(self) -> None:
-        """Copy the file path of the selected item to clipboard."""
-        item = self.results_tree.currentItem()
-        if not item:
+        """Copy file path(s) of selected items to clipboard."""
+        selected = self.results_tree.selectedItems()
+        if not selected:
             return
-        result = item.data(0, RESULT_ROLE)  # pyright: ignore[reportUnknownMemberType]
-        if isinstance(result, dict):
-            file_path = result.get("file_path", item.text(0))  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
-        else:
-            # Context line — get path from parent
-            parent = item.parent()
-            if parent is not None:  # pyright: ignore[reportUnnecessaryComparison]
-                parent_result = parent.data(0, RESULT_ROLE)  # pyright: ignore[reportUnknownMemberType]
-                if isinstance(parent_result, dict):
-                    file_path = parent_result.get("file_path", parent.text(0))  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
-                else:
-                    file_path = parent.text(0)
+        paths: list[str] = []
+        for item in selected:
+            result = item.data(0, RESULT_ROLE)  # pyright: ignore[reportUnknownMemberType]
+            if isinstance(result, dict):
+                path = result.get("file_path", item.text(0))  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
             else:
-                file_path = item.text(0)
-        QApplication.clipboard().setText(str(file_path))  # pyright: ignore[reportUnknownArgumentType]
+                parent = item.parent()
+                if parent is not None:  # pyright: ignore[reportUnnecessaryComparison]
+                    parent_result = parent.data(0, RESULT_ROLE)  # pyright: ignore[reportUnknownMemberType]
+                    if isinstance(parent_result, dict):
+                        path = parent_result.get("file_path", parent.text(0))  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+                    else:
+                        path = parent.text(0)
+                else:
+                    path = item.text(0)
+            if str(path) not in paths:  # pyright: ignore[reportUnknownArgumentType]
+                paths.append(str(path))  # pyright: ignore[reportUnknownArgumentType]
+        QApplication.clipboard().setText("\n".join(paths))
+        count = len(paths)
+        self.update_status(f"Copied {count} file path{'s' if count != 1 else ''} to clipboard")  # pyright: ignore[reportUnknownArgumentType]
 
     def _copy_matching_line(self) -> None:
         """Copy the matching line text to clipboard."""
@@ -553,14 +585,6 @@ class SearchUI(QMainWindow):
 
     def _apply_preset(self, preset: str) -> None:
         """Apply a file type preset."""
-        # Clear stale advanced filter state
-        self.min_size_entry.clear()
-        self.max_size_entry.clear()
-        self.depth_entry.clear()
-        self.max_results_entry.clear()
-        self.modified_after_entry.setDate(self.modified_after_entry.minimumDate())
-        self.modified_before_entry.setDate(self.modified_before_entry.minimumDate())
-
         if not preset:
             self.include_entry.clear()
             self.exclude_entry.clear()
@@ -580,7 +604,8 @@ class SearchUI(QMainWindow):
             self.exclude_entry.setText(exc)
             if preset == "Large Files (>10MB)":
                 self.min_size_entry.setText("10485760")
-                self.include_entry.setText("")
+            else:
+                self.min_size_entry.clear()
 
     def _toggle_advanced_filters(self, checked: bool) -> None:
         """Toggle visibility of advanced filter options."""
@@ -609,10 +634,49 @@ class SearchUI(QMainWindow):
             self.progress_bar.setRange(0, 1)
             self.progress_bar.setValue(0)
 
+        # Show/hide empty state
+        if not searching:
+            has_any = self.results_tree.topLevelItemCount() > 0
+            if not has_any:
+                self._empty_label.setText("No matches found")
+                vp = self.results_tree.viewport()
+                self._empty_label.setGeometry(0, 0, vp.width(), vp.height())
+            self._empty_label.setVisible(not has_any)
+            self._filter_bar.setVisible(has_any)
+        else:
+            self._empty_label.setVisible(False)
+            self._filter_bar.setVisible(False)
+
     def clear_results(self):
         """Clear the results tree."""
         self.results_tree.clear()
         self._file_group_items = {}
+        self._file_group_match_counts = {}
+        self._empty_label.setText("Enter a search term above")
+        self._empty_label.setVisible(True)
+        self._filter_bar.clear()
+        self._filter_bar.setVisible(False)
+
+    def _apply_result_filter(self, text: str) -> None:
+        """Filter displayed results by text match on file path and content."""
+        filter_text = text.lower()
+        for i in range(self.results_tree.topLevelItemCount()):
+            item = self.results_tree.topLevelItem(i)
+            if item is None:
+                continue
+            if not filter_text:
+                item.setHidden(False)
+                continue
+            path = item.text(0).lower()
+            # For grouped items, also check child content
+            match = filter_text in path
+            if not match and item.childCount() > 0:
+                for j in range(item.childCount()):
+                    child = item.child(j)
+                    if child is not None and filter_text in child.text(1).lower():  # pyright: ignore[reportUnnecessaryComparison]
+                        match = True
+                        break
+            item.setHidden(not match)
 
     def add_results_batch(self, items: list[SearchResult]) -> None:
         """Add multiple results, grouping content search results by file."""
@@ -622,6 +686,7 @@ class SearchUI(QMainWindow):
             # Flat mode for filename search — unchanged behavior
             tree_items = [self._create_result_item(result) for result in items]
             self.results_tree.addTopLevelItems(tree_items)
+            self.results_tree.setColumnHidden(1, True)
             return
         # Grouped mode for content search
         for result in items:
@@ -646,6 +711,10 @@ class SearchUI(QMainWindow):
                 parent.setToolTip(0, result.file_path)
                 self._file_group_items[result.file_path] = parent
                 self.results_tree.addTopLevelItem(parent)
+                bold_font = parent.font(0)
+                bold_font.setBold(True)
+                parent.setFont(0, bold_font)
+                self.results_tree.setColumnHidden(1, False)
 
             # Add before-context lines as dimmed children
             if result.context_before:
@@ -659,6 +728,9 @@ class SearchUI(QMainWindow):
 
             # Add the match child
             child = self._create_result_item(result)
+            child.setText(0, "")
+            child.setText(2, "")
+            child.setText(3, "")
             parent.addChild(child)
             self._apply_match_highlight(child)
 
@@ -672,14 +744,11 @@ class SearchUI(QMainWindow):
                     ctx_item.setFont(1, font)
                     parent.addChild(ctx_item)
 
-            # Update match count — only count items with RESULT_ROLE data
-            actual_matches = sum(
-                1
-                for j in range(parent.childCount())
-                if parent.child(j) is not None and parent.child(j).data(0, RESULT_ROLE) is not None  # type: ignore[union-attr]
-            )
-            parent.setText(1, f"{actual_matches} match{'es' if actual_matches != 1 else ''}")
-            parent.setData(1, SORT_ROLE, actual_matches)
+            # Update match count using O(1) counter
+            count = self._file_group_match_counts.get(result.file_path, 0) + 1
+            self._file_group_match_counts[result.file_path] = count
+            parent.setText(1, f"{count} match{'es' if count != 1 else ''}")
+            parent.setData(1, SORT_ROLE, count)
 
     def _create_result_item(self, result: SearchResult) -> ResultTreeWidgetItem:
         """Convert a SearchResult into a sortable tree row with attached metadata."""
@@ -742,7 +811,8 @@ class SearchUI(QMainWindow):
         before = html.escape(line_content[:match_start])
         matched = html.escape(line_content[match_start : match_start + match_length])
         after = html.escape(line_content[match_start + match_length :])
-        html_text = f'{html.escape(prefix)}{before}<b style="color: #e8a025;">{matched}</b>{after}'
+        hl_style = "background-color: #fff3cd; font-weight: bold;"
+        html_text = f'{html.escape(prefix)}{before}<span style="{hl_style}">{matched}</span>{after}'
 
         label = QLabel(html_text)
         label.setTextFormat(Qt.TextFormat.RichText)

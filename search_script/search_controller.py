@@ -49,6 +49,7 @@ class SearchController:
         self.search_result_limit: int | None = None
         self._last_search_params: SearchParams | None = None
         self._search_generation: int = 0
+        self._search_start_time: float = 0.0
 
         # Setup callbacks
         self._setup_callbacks()
@@ -109,6 +110,7 @@ class SearchController:
         self.result_queue = queue.Queue()
         self.search_was_truncated = False
         self.search_result_limit = params.max_results
+        self._search_start_time = monotonic()
 
         self.search_thread = threading.Thread(
             target=self._search_worker, args=(params, cancel_event), daemon=True
@@ -207,6 +209,7 @@ class SearchController:
                 elif isinstance(msg, LimitReachedMsg):
                     self.search_was_truncated = True
                     self.search_result_limit = msg.limit
+                    self.ui.update_status(f"Result limit reached ({msg.limit}). Finishing...")
                 elif isinstance(msg, ErrorMsg):
                     if batch:
                         self.ui.add_results_batch(batch)
@@ -242,21 +245,24 @@ class SearchController:
     def _handle_search_complete(self):
         """Handle search completion."""
         self.ui.set_search_state(False)
+        elapsed = monotonic() - self._search_start_time
+        elapsed_str = f"in {elapsed:.1f}s"
         displayed, file_count = self.ui.get_result_summary()
         if self.search_was_truncated and self.search_result_limit is not None:
+            limit = self.search_result_limit
             self.ui.update_status(
-                f"Search completed. Showing {displayed} matches across {file_count} files "
-                f"(limit {self.search_result_limit})."
+                f"Search completed {elapsed_str}. Showing {displayed} matches "
+                f"across {file_count} files (limit {limit})."
             )
         else:
             self.ui.update_status(
-                f"Search completed. {displayed} matches across {file_count} files."
+                f"Search completed {elapsed_str}. {displayed} matches across {file_count} files."
             )
 
         if displayed > 0:
-            self.logger.info(f"Search completed with {displayed} matches")
+            self.logger.info(f"Search completed with {displayed} matches in {elapsed:.1f}s")
         else:
-            self.ui.update_status("Search completed. No matches found.")
+            self.ui.update_status(f"Search completed {elapsed_str}. No matches found.")
             self.logger.info("Search completed with no matches")
 
     def _handle_search_error(self, error_msg: str):
