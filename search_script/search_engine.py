@@ -260,6 +260,16 @@ class SearchEngine:
                         cancel_event=cancel_event,
                         on_limit_reached=on_limit_reached,
                     )
+                    if search_backend == SearchBackend.AUTO and not (
+                        cancel_event and cancel_event.is_set()
+                    ):
+                        self._inventory.warm_snapshot(
+                            directory=directory,
+                            max_depth=max_depth,
+                            follow_symlinks=follow_symlinks,
+                            include_ignored=include_ignored,
+                            exclude_shots=exclude_shots,
+                        )
                     return
                 except RipgrepUnavailableError:
                     self.logger.info("Falling back to Python search backend")
@@ -601,9 +611,9 @@ class SearchEngine:
         if requested_backend == SearchBackend.RIPGREP:
             # Honor explicit ripgrep request (if available)
             return SearchBackend.RIPGREP if self._rg_path else SearchBackend.PYTHON
-        # AUTO: inventory cache for filenames, ripgrep for content
+        # AUTO: prefer ripgrep for ordinary content and filename searches.
         if not search_within_files:
-            return SearchBackend.PYTHON
+            return SearchBackend.RIPGREP if self._rg_path else SearchBackend.PYTHON
         if self._rg_path is None:
             return SearchBackend.PYTHON
         return SearchBackend.RIPGREP

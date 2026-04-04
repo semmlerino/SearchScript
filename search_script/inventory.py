@@ -24,6 +24,7 @@ from .constants import (
     NFS_INVENTORY_WALK_MAX_WORKERS,
     PERSISTENT_INDEX_MAX_AGE_CEILING_S,
     PERSISTENT_INDEX_MAX_AGE_S,
+    PRUNED_DIRECTORY_NAMES,
     SPOT_CHECK_SAMPLE_SIZE,
 )
 from .file_utils import is_nfs_path
@@ -163,6 +164,37 @@ class InventoryManager:
         with self._cache_lock:
             self._cache.pop(cache_key, None)
         self._index_store.delete_snapshot(cache_key)
+
+    def warm_snapshot(
+        self,
+        directory: str,
+        max_depth: int | None,
+        follow_symlinks: bool,
+        include_ignored: bool = True,
+        exclude_shots: bool = True,
+    ) -> None:
+        """Warm a snapshot in the background for future Python-backed searches."""
+        if self._shutdown_event.is_set():
+            return
+        cache_key = InventoryCacheKey(
+            directory=os.path.realpath(directory),
+            max_depth=max_depth,
+            follow_symlinks=follow_symlinks,
+            include_ignored=include_ignored,
+            exclude_shots=exclude_shots,
+        )
+        with self._cache_lock:
+            snapshot = self._cache.get(cache_key)
+            if snapshot is not None and self._is_fresh(snapshot):
+                return
+        self._schedule_refresh(
+            cache_key=cache_key,
+            directory=directory,
+            max_depth=max_depth,
+            follow_symlinks=follow_symlinks,
+            include_ignored=include_ignored,
+            exclude_shots=exclude_shots,
+        )
 
     def shutdown(self) -> None:
         """Signal background threads to stop."""
@@ -366,6 +398,8 @@ class InventoryManager:
                         if entry.is_file(follow_symlinks=follow_symlinks):
                             yield (directory, entry)
                         elif entry.is_dir(follow_symlinks=follow_symlinks):
+                            if entry.name in PRUNED_DIRECTORY_NAMES:
+                                continue
                             if exclude_shots and entry.name == "shots":
                                 continue
                             subdirs.append(entry)
@@ -494,6 +528,8 @@ class InventoryManager:
                                     )
                                 )
                             elif entry.is_dir(follow_symlinks=follow_symlinks):
+                                if entry.name in PRUNED_DIRECTORY_NAMES:
+                                    continue
                                 if exclude_shots and entry.name == "shots":
                                     continue
                                 if max_depth is not None and work.depth + 1 > max_depth:

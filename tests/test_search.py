@@ -451,6 +451,53 @@ def test_search_results_carry_mod_time(tmp_path: Path):
     assert results[0].formatted_mod_time != "N/A"
 
 
+def test_auto_filename_search_prefers_ripgrep_and_warms_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    engine = SearchEngine()
+    engine._rg_path = "rg"  # pyright: ignore[reportPrivateUsage]
+    engine._ripgrep._rg_path = "rg"  # pyright: ignore[reportPrivateUsage]
+    calls = {"ripgrep": 0, "warm": 0}
+
+    def fake_search_filenames(**_: Any):
+        calls["ripgrep"] += 1
+        yield SearchResult("/tmp/target.txt", match_score=100.0)
+
+    def fail_get_snapshot(*_: Any, **__: Any):
+        raise AssertionError("AUTO filename search should not build inventory on the hot path")
+
+    def record_warm(*_: Any, **__: Any):
+        calls["warm"] += 1
+
+    monkeypatch.setattr(
+        engine._ripgrep,  # pyright: ignore[reportPrivateUsage]
+        "search_filenames",
+        fake_search_filenames,
+    )
+    monkeypatch.setattr(
+        engine._inventory,  # pyright: ignore[reportPrivateUsage]
+        "get_snapshot",
+        fail_get_snapshot,
+    )
+    monkeypatch.setattr(
+        engine._inventory,  # pyright: ignore[reportPrivateUsage]
+        "warm_snapshot",
+        record_warm,
+    )
+
+    results = list(
+        engine.search_files(
+            "/tmp",
+            "target",
+            search_within_files=False,
+            search_backend=SearchBackend.AUTO,
+        )
+    )
+
+    assert [r.file_path for r in results] == ["/tmp/target.txt"]
+    assert calls == {"ripgrep": 1, "warm": 1}
+
+
 def test_utf16_content_search_python_backend(tmp_path: Path):
     test_file = tmp_path / "notes.txt"
     test_file.write_text("needle here\n", encoding="utf-16")
@@ -1217,6 +1264,28 @@ def test_include_ignored_true_returns_all(tmp_path: Path):
     assert str(tmp_path / "debug.log") in paths
 
 
+def test_python_filename_search_prunes_snapshots(tmp_path: Path) -> None:
+    """Filename searches should skip .snapshots even when ignored files are included."""
+    (tmp_path / "visible_target.txt").write_text("content")
+    snapshots_dir = tmp_path / ".snapshots" / "archive"
+    snapshots_dir.mkdir(parents=True)
+    (snapshots_dir / "archived_target.txt").write_text("content")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "target",
+            search_within_files=False,
+            search_backend=SearchBackend.PYTHON,
+            include_ignored=True,
+        )
+    )
+
+    names = {Path(r.file_path).name for r in results}
+    assert names == {"visible_target.txt"}
+
+
 def test_nested_gitignore_anchored_patterns(tmp_path: Path):
     """Anchored patterns in nested .gitignore files apply only relative to that file's directory."""
     # Root .gitignore — ignores *.log everywhere
@@ -1759,6 +1828,35 @@ def test_ripgrep_filename_search_case_insensitive(tmp_path: Path) -> None:
         )
     )
     assert len(results) == 1
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+def test_ripgrep_include_ignored_searches_hidden_dirs_but_prunes_snapshots(
+    tmp_path: Path,
+) -> None:
+    """Ripgrep should include normal hidden dirs on demand while still pruning .snapshots."""
+    (tmp_path / "visible_target.txt").write_text("content")
+    hidden_dir = tmp_path / ".hidden"
+    hidden_dir.mkdir()
+    (hidden_dir / "hidden_target.txt").write_text("content")
+    snapshots_dir = tmp_path / ".snapshots" / "archive"
+    snapshots_dir.mkdir(parents=True)
+    (snapshots_dir / "archived_target.txt").write_text("content")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "target",
+            search_within_files=False,
+            search_mode=SearchMode.SUBSTRING,
+            search_backend=SearchBackend.RIPGREP,
+            include_ignored=True,
+        )
+    )
+
+    names = {Path(r.file_path).name for r in results}
+    assert names == {"hidden_target.txt", "visible_target.txt"}
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")

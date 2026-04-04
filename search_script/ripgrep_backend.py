@@ -11,7 +11,7 @@ from pathlib import Path
 from queue import Empty, Queue
 
 from .config import SearchError
-from .constants import NFS_MAX_WORKERS_CAP, RIPGREP_PROGRESS_MILESTONE
+from .constants import NFS_MAX_WORKERS_CAP, PRUNED_DIRECTORY_NAMES, RIPGREP_PROGRESS_MILESTONE
 from .file_utils import is_nfs_path
 from .models import (
     MatchPlan,
@@ -32,6 +32,23 @@ class RipgrepBackend:
         self.logger = logger
         self._rg_path = rg_path
         self.max_workers = max_workers
+
+    def _append_pruned_directory_globs(
+        self,
+        command: list[str],
+        *,
+        directory: str,
+        exclude_shots: bool,
+    ) -> None:
+        """Append globs that prune expensive subtrees while preserving explicit root searches."""
+        root_name = Path(directory).name
+        pruned_names = list(PRUNED_DIRECTORY_NAMES)
+        if exclude_shots:
+            pruned_names.append("shots")
+        for dir_name in pruned_names:
+            if root_name == dir_name:
+                continue
+            command.extend(["-g", f"!**/{dir_name}/**"])
 
     def search(
         self,
@@ -264,7 +281,7 @@ class RipgrepBackend:
             str(thread_count),
         ]
         if include_ignored:
-            command.append("--no-ignore")
+            command.extend(["--hidden", "--no-ignore"])
         if follow_symlinks:
             command.append("-L")
         if max_depth is not None:
@@ -273,8 +290,11 @@ class RipgrepBackend:
             command.extend(["-g", f"*{ext}"])
         for ext in exclude_types:
             command.extend(["-g", f"!*{ext}"])
-        if exclude_shots:
-            command.extend(["-g", "!shots/"])
+        self._append_pruned_directory_globs(
+            command,
+            directory=directory,
+            exclude_shots=exclude_shots,
+        )
         if is_nfs_path(directory):
             command.append("--no-mmap")
         command.append(directory)
@@ -482,7 +502,7 @@ class RipgrepBackend:
             str(thread_count),
         ]
         if include_ignored:
-            command.append("--no-ignore")
+            command.extend(["--hidden", "--no-ignore"])
         if follow_symlinks:
             command.append("-L")
         if max_depth is not None:
@@ -493,8 +513,11 @@ class RipgrepBackend:
             command.extend(["-g", f"*{ext}"])
         for ext in exclude_types:
             command.extend(["-g", f"!*{ext}"])
-        if exclude_shots:
-            command.extend(["-g", "!shots/"])
+        self._append_pruned_directory_globs(
+            command,
+            directory=directory,
+            exclude_shots=exclude_shots,
+        )
         if is_nfs_path(directory):
             command.append("--no-mmap")
 
