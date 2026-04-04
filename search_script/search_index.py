@@ -175,47 +175,107 @@ class SearchIndexStore:
                         snapshot.scan_duration_s,
                     ),
                 )
-                conn.execute(
-                    "DELETE FROM inventory_entries WHERE cache_key = ?",
+
+                # --- diff-based save for inventory_entries ---
+                rows = conn.execute(
+                    "SELECT file_path, mod_time, file_size"
+                    " FROM inventory_entries WHERE cache_key = ?",
                     (serialized_key,),
-                )
-                conn.execute(
-                    "DELETE FROM inventory_dirs WHERE cache_key = ?",
-                    (serialized_key,),
-                )
-                conn.executemany(
-                    """
-                    INSERT INTO inventory_dirs (cache_key, dir_path)
-                    VALUES (?, ?)
-                    """,
-                    ((serialized_key, directory) for directory in snapshot.directories),
-                )
-                conn.executemany(
-                    """
-                    INSERT INTO inventory_entries (
-                        cache_key,
-                        file_path,
-                        parent_dir,
-                        file_name,
-                        file_lower,
-                        mod_time,
-                        file_size
+                ).fetchall()
+                existing_entries: dict[str, tuple[float, int]] = {
+                    row[0]: (row[1], row[2]) for row in rows
+                }
+                existing_paths = set(existing_entries)
+
+                new_entries: dict[str, InventoryEntry] = {
+                    entry.file_path: entry for entry in snapshot.files
+                }
+                new_paths = set(new_entries)
+
+                to_delete = existing_paths - new_paths
+                to_insert = new_paths - existing_paths
+                to_update = {
+                    p
+                    for p in existing_paths & new_paths
+                    if existing_entries[p] != (new_entries[p].mod_time, new_entries[p].file_size)
+                }
+
+                if to_delete:
+                    conn.executemany(
+                        "DELETE FROM inventory_entries WHERE cache_key = ? AND file_path = ?",
+                        ((serialized_key, p) for p in to_delete),
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        (
-                            serialized_key,
-                            entry.file_path,
-                            entry.parent_dir,
-                            entry.file_name,
-                            entry.file_lower,
-                            entry.mod_time,
-                            entry.file_size,
+                if to_insert:
+                    conn.executemany(
+                        """
+                        INSERT INTO inventory_entries (
+                            cache_key,
+                            file_path,
+                            parent_dir,
+                            file_name,
+                            file_lower,
+                            mod_time,
+                            file_size
                         )
-                        for entry in snapshot.files
-                    ),
-                )
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            (
+                                serialized_key,
+                                new_entries[p].file_path,
+                                new_entries[p].parent_dir,
+                                new_entries[p].file_name,
+                                new_entries[p].file_lower,
+                                new_entries[p].mod_time,
+                                new_entries[p].file_size,
+                            )
+                            for p in to_insert
+                        ),
+                    )
+                if to_update:
+                    conn.executemany(
+                        """
+                        UPDATE inventory_entries
+                        SET mod_time = ?, file_size = ?,
+                            parent_dir = ?, file_name = ?, file_lower = ?
+                        WHERE cache_key = ? AND file_path = ?
+                        """,
+                        (
+                            (
+                                new_entries[p].mod_time,
+                                new_entries[p].file_size,
+                                new_entries[p].parent_dir,
+                                new_entries[p].file_name,
+                                new_entries[p].file_lower,
+                                serialized_key,
+                                p,
+                            )
+                            for p in to_update
+                        ),
+                    )
+
+                # --- diff-based save for inventory_dirs ---
+                dir_rows = conn.execute(
+                    "SELECT dir_path FROM inventory_dirs WHERE cache_key = ?",
+                    (serialized_key,),
+                ).fetchall()
+                existing_dirs: set[str] = {row[0] for row in dir_rows}
+                new_dirs: set[str] = set(snapshot.directories)
+
+                dirs_to_delete = existing_dirs - new_dirs
+                dirs_to_insert = new_dirs - existing_dirs
+
+                if dirs_to_delete:
+                    conn.executemany(
+                        "DELETE FROM inventory_dirs WHERE cache_key = ? AND dir_path = ?",
+                        ((serialized_key, d) for d in dirs_to_delete),
+                    )
+                if dirs_to_insert:
+                    conn.executemany(
+                        "INSERT INTO inventory_dirs (cache_key, dir_path) VALUES (?, ?)",
+                        ((serialized_key, d) for d in dirs_to_insert),
+                    )
+
                 self._prune_old_snapshots(conn)
         except sqlite3.Error as exc:
             self.logger.warning(f"Failed to save persistent inventory index: {exc}")
