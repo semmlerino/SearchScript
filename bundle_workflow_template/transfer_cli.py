@@ -11,7 +11,6 @@ import base64
 import contextlib
 import io
 import json
-import os
 import sys
 import tarfile
 from datetime import datetime, timezone
@@ -38,7 +37,8 @@ class FolderEncoder:
         self.chunk_size_kb: int = chunk_size_kb
         self.verbose: bool = verbose
 
-    def _get_folder_size(self, folder_path: Path) -> int:
+    @staticmethod
+    def get_folder_size(folder_path: Path) -> int:
         """Calculate total size of folder contents in bytes.
 
         Args:
@@ -83,7 +83,7 @@ class FolderEncoder:
             raise ValueError(msg)
 
         # Check folder size before loading into memory
-        folder_size_bytes = self._get_folder_size(folder_path_obj)
+        folder_size_bytes = FolderEncoder.get_folder_size(folder_path_obj)
         folder_size_mb = folder_size_bytes / (1024 * 1024)
         if folder_size_mb > self.MAX_FOLDER_SIZE_MB:
             msg = (
@@ -156,71 +156,52 @@ class FolderEncoder:
         return chunks
 
 
-def get_folder_size(folder_path: str) -> int:
-    """Calculate total size of a folder in bytes.
-
-    Args:
-        folder_path: Path to the folder
-
-    Returns:
-        Total size in bytes
-
-    """
-    total_size = 0
-    for dirpath, _, filenames in os.walk(folder_path):
-        for filename in filenames:
-            filepath = Path(dirpath) / filename
-            if filepath.exists():
-                total_size += filepath.stat().st_size
-    return total_size
-
-
 def main() -> None:
     """Main entry point for CLI."""
     parser = argparse.ArgumentParser(
         description="Encode a folder to base64 format (compatible with Transfer.py)",
     )
-    _ = parser.add_argument("folder", help="Path to the folder to encode")
-    _ = parser.add_argument(
+    parser.add_argument("folder", help="Path to the folder to encode")
+    parser.add_argument(
         "-o",
         "--output",
         help="Output file (default: stdout)",
         default=None,
     )
-    _ = parser.add_argument(
+    parser.add_argument(
         "-c",
         "--chunk-size",
         type=int,
         default=0,
         help="Chunk size in KB (0 for no chunking, default: 0)",
     )
-    _ = parser.add_argument(
+    parser.add_argument(
         "--chunk-dir",
         help="Directory to save individual chunk files",
         default=None,
     )
-    _ = parser.add_argument(
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
         help="Enable verbose output",
     )
-    _ = parser.add_argument(
+    parser.add_argument(
         "--metadata",
         action="store_true",
         help="Generate metadata JSON (saved to separate file by default)",
     )
-    _ = parser.add_argument(
+    parser.add_argument(
         "--metadata-file",
         help="Path for separate metadata file (auto-generated if --metadata used without this)",
         default=None,
     )
-    _ = parser.add_argument(
+    parser.add_argument(
         "--embed-metadata",
         action="store_true",
         help="Embed metadata in output file instead of separate file",
     )
-    _ = parser.add_argument(
+    parser.add_argument(
         "--single-file",
         action="store_true",
         help="When chunking, combine all chunks into a single file",
@@ -241,7 +222,7 @@ def main() -> None:
 
     try:
         # Calculate folder size
-        folder_size = get_folder_size(folder_path)
+        folder_size = FolderEncoder.get_folder_size(Path(folder_path))
         verbose = cast("bool", args.verbose)
         if verbose:
             size_mb = folder_size / (1024 * 1024)
@@ -305,7 +286,7 @@ def main() -> None:
                     / f"{folder_name}_{timestamp}_chunk_{i:03d}_of_{len(chunks):03d}.txt"
                 )
                 with chunk_file.open("w") as f:
-                    _ = f.write(chunk)
+                    f.write(chunk)
                 if verbose:
                     print(
                         f"Saved chunk {i}/{len(chunks)}: {chunk_file}",
@@ -335,7 +316,7 @@ def main() -> None:
 
             if output_file:
                 with Path(output_file).open("w") as f:
-                    _ = f.write(output_content)
+                    f.write(output_content)
                 if verbose:
                     print(f"Saved combined chunks to: {output_file}", file=sys.stderr)
             else:
@@ -359,7 +340,7 @@ def main() -> None:
 
             if output_file:
                 with Path(output_file).open("w") as f:
-                    _ = f.write(output_content)
+                    f.write(output_content)
                 if verbose:
                     print(f"Saved to: {output_file}", file=sys.stderr)
             else:

@@ -16,6 +16,7 @@ from .models import (
     SearchMode,
     SearchResult,
     check_file_filters,
+    ensure_glob_wildcard,
     truncate_line,
 )
 
@@ -291,7 +292,7 @@ class RipgrepBackend:
 
     def _translate_glob_to_regex(self, search_term: str) -> str:
         """Translate the app's line-glob semantics into a ripgrep-compatible regex."""
-        pattern = self._ensure_glob_wildcard(search_term)
+        pattern = ensure_glob_wildcard(search_term)
         translated: list[str] = []
         idx = 0
         while idx < len(pattern):
@@ -328,11 +329,6 @@ class RipgrepBackend:
                 translated.append(re.escape(char))
             idx += 1
         return f"^{''.join(translated)}$"
-
-    @staticmethod
-    def _ensure_glob_wildcard(term: str) -> str:
-        """Wrap term in wildcards if it contains no explicit glob characters."""
-        return term if any(c in term for c in "*?[]") else f"*{term}*"
 
     def _resolve_path(self, search_root: Path, path_info: dict[str, str]) -> Path:
         """Resolve ripgrep's match path into an absolute path under the searched root."""

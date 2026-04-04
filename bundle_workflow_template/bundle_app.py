@@ -424,38 +424,38 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Bundle application files for base64 encoding",
     )
-    _ = parser.add_argument(
+    parser.add_argument(
         "-c",
         "--config",
         help="Configuration file path",
         default="bundle_workflow_template/transfer_config.json",
         type=str,
     )
-    _ = parser.add_argument(
+    parser.add_argument(
         "-o",
         "--output",
         help="Output file for encoded bundle",
         default=None,
         type=str,
     )
-    _ = parser.add_argument(
+    parser.add_argument(
         "--bundle-dir",
         help="Directory to create bundle in (temp dir if not specified)",
         default=None,
         type=str,
     )
-    _ = parser.add_argument(
+    parser.add_argument(
         "--keep-bundle",
         action="store_true",
         help="Keep the bundle directory after encoding",
     )
-    _ = parser.add_argument(
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
         help="Enable verbose output",
     )
-    _ = parser.add_argument(
+    parser.add_argument(
         "--list-files",
         action="store_true",
         help="List files that would be bundled without creating bundle",

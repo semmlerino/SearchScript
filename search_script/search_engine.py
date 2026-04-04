@@ -35,6 +35,7 @@ from .models import (
     SearchMode,
     SearchResult,
     check_file_filters,
+    ensure_glob_wildcard,
     truncate_line,
 )
 from .ripgrep_backend import RipgrepBackend, RipgrepUnavailableError
@@ -589,7 +590,7 @@ class SearchEngine:
                 return (100.0, idx, len(match_plan.normalized_term))
             return None
         if match_plan.mode == SearchMode.GLOB:
-            pattern = self._ensure_glob_wildcard(match_plan.raw_term)
+            pattern = ensure_glob_wildcard(match_plan.raw_term)
             if match_plan.case_sensitive:
                 matched = fnmatch.fnmatch(text, pattern)
             else:
@@ -610,7 +611,7 @@ class SearchEngine:
             if score is not None:
                 return (score, 0, 0)  # No precise position for fuzzy
             return None
-        return None
+        raise AssertionError(f"Unhandled SearchMode: {match_plan.mode!r}")
 
     def _score_fuzzy_match(
         self, text: str, normalized_term: str, *, allow_partial_fuzzy: bool
@@ -645,11 +646,6 @@ class SearchEngine:
                 score += FUZZY_WORD_BONUS
 
         return score if score >= threshold else None
-
-    @staticmethod
-    def _ensure_glob_wildcard(term: str) -> str:
-        """Wrap term in wildcards if it contains no explicit glob characters."""
-        return term if any(c in term for c in "*?[]") else f"*{term}*"
 
     def _detect_bom(self, file_path: Path) -> str | None:
         """Read up to 4 bytes and return the encoding if a BOM is present, else None."""

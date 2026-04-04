@@ -69,6 +69,7 @@ def decode_bundle(
             encoded_data = content[header_end + 1 :]  # Everything after first newline
 
             # Parse header: FOLDER_TRANSFER_V1|chunk_num|total_chunks|folder_name
+            # TODO: chunked reassembly not implemented
             header_parts = header_line.split("|")
             if len(header_parts) >= 4:
                 chunk_num = header_parts[1]
@@ -138,7 +139,7 @@ def decode_bundle(
         except tarfile.TarError as e:
             # Try without gzip compression
             print("Trying uncompressed tar...")
-            _ = tar_buffer.seek(0)
+            tar_buffer.seek(0)
             try:
                 with tarfile.open(fileobj=tar_buffer, mode="r:") as tar:
                     return _do_extraction(tar, output_dir, list_only)
@@ -174,16 +175,16 @@ Examples:
         """,
     )
 
-    _ = parser.add_argument("encoded_file", help="Path to the base64-encoded bundle file")
+    parser.add_argument("encoded_file", help="Path to the base64-encoded bundle file")
 
-    _ = parser.add_argument(
+    parser.add_argument(
         "-o",
         "--output-dir",
         help="Output directory (default: current directory)",
         default=None,
     )
 
-    _ = parser.add_argument(
+    parser.add_argument(
         "--list-only",
         action="store_true",
         help="Only list archive contents without extracting",

@@ -8,9 +8,7 @@ from enum import Enum
 
 from .constants import LINE_CONTENT_MAX_CHARS
 
-_rapidfuzz_ok: bool = _importlib_util.find_spec("rapidfuzz") is not None
-
-RAPIDFUZZ_AVAILABLE: bool = _rapidfuzz_ok
+RAPIDFUZZ_AVAILABLE: bool = _importlib_util.find_spec("rapidfuzz") is not None
 
 
 @dataclass
@@ -152,3 +150,8 @@ def truncate_line(text: str) -> str:
     if len(text) > LINE_CONTENT_MAX_CHARS:
         return text[:LINE_CONTENT_MAX_CHARS] + "..."
     return text
+
+
+def ensure_glob_wildcard(term: str) -> str:
+    """Wrap term in wildcards if it contains no explicit glob characters."""
+    return term if any(c in term for c in "*?[]") else f"*{term}*"
