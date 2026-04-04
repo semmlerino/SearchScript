@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from search_script.config import ValidationError
 from search_script.file_utils import FileOperations
+from search_script.inventory import InventoryManager
 from search_script.models import SearchBackend, SearchMode, SearchResult
 from search_script.search_controller import SearchController
 from search_script.search_engine import SearchEngine
@@ -252,14 +253,14 @@ def test_search_engine_reuses_inventory_cache(tmp_path: Path, monkeypatch: pytes
 
     engine = SearchEngine()
     build_calls = 0
-    original = engine._build_inventory_snapshot  # pyright: ignore[reportPrivateUsage]
+    original = engine._inventory._build_snapshot  # pyright: ignore[reportPrivateUsage]
 
     def wrapped(*args: Any, **kwargs: Any) -> Any:
         nonlocal build_calls
         build_calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(engine, "_build_inventory_snapshot", wrapped)
+    monkeypatch.setattr(engine._inventory, "_build_snapshot", wrapped)  # pyright: ignore[reportPrivateUsage]
 
     list(engine.search_files(str(tmp_path), "file", search_within_files=False))
     list(engine.search_files(str(tmp_path), "file", search_within_files=False))
@@ -287,7 +288,7 @@ def test_search_engine_uses_persistent_index_between_instances(
     def fail_build(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("persistent index should avoid rebuilding inventory")
 
-    monkeypatch.setattr(second_engine, "_build_inventory_snapshot", fail_build)
+    monkeypatch.setattr(second_engine._inventory, "_build_snapshot", fail_build)  # pyright: ignore[reportPrivateUsage]
     second_results = list(
         second_engine.search_files(str(search_root), "file", search_within_files=False)
     )
@@ -331,13 +332,13 @@ def test_search_engine_refreshes_stale_persistent_index_in_background(tmp_path: 
 
     deadline = monotonic() + 2.0
     while monotonic() < deadline:
-        with second_engine._inventory_refresh_lock:  # pyright: ignore[reportPrivateUsage]
-            if not second_engine._inventory_refreshes:  # pyright: ignore[reportPrivateUsage]
+        with second_engine._inventory._refresh_lock:  # pyright: ignore[reportPrivateUsage]
+            if not second_engine._inventory._refreshes:  # pyright: ignore[reportPrivateUsage]
                 break
         sleep(0.05)
 
-    with second_engine._inventory_refresh_lock:  # pyright: ignore[reportPrivateUsage]
-        assert not second_engine._inventory_refreshes  # pyright: ignore[reportPrivateUsage]
+    with second_engine._inventory._refresh_lock:  # pyright: ignore[reportPrivateUsage]
+        assert not second_engine._inventory._refreshes  # pyright: ignore[reportPrivateUsage]
 
     third_engine = SearchEngine(index_db_path=index_db)
     fresh_results = list(
@@ -346,7 +347,7 @@ def test_search_engine_refreshes_stale_persistent_index_in_background(tmp_path: 
 
     assert len(stale_results) == 1
     assert len(fresh_results) == 2
-    assert second_engine.BACKGROUND_REFRESH_STATUS in statuses
+    assert InventoryManager.BACKGROUND_REFRESH_STATUS in statuses
 
 
 def test_include_ignored_cache_key_separation(tmp_path: Path):
@@ -635,26 +636,26 @@ def test_in_memory_cache_fresh_at_59s(tmp_path: Path, monkeypatch: pytest.Monkey
 
     frozen = _real_time()
     snapshot.created_at = frozen - 59.0
-    monkeypatch.setattr("search_script.search_engine.time", lambda: frozen)
-    assert engine._is_inventory_snapshot_fresh(snapshot) is True  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr("search_script.inventory.time", lambda: frozen)
+    assert engine._inventory._is_fresh(snapshot) is True  # pyright: ignore[reportPrivateUsage]  # pyright: ignore[reportPrivateUsage]
 
 
 def test_fast_scan_uses_base_ttl():
     engine = SearchEngine()
     snapshot = InventorySnapshot(files=[], directories=[], created_at=0.0, scan_duration_s=0.5)
-    assert engine._compute_effective_ttl(snapshot) == 300.0  # pyright: ignore[reportPrivateUsage]
+    assert engine._inventory._compute_effective_ttl(snapshot) == 300.0  # pyright: ignore[reportPrivateUsage]  # pyright: ignore[reportPrivateUsage]
 
 
 def test_slow_scan_scales_ttl():
     engine = SearchEngine()
     snapshot = InventorySnapshot(files=[], directories=[], created_at=0.0, scan_duration_s=10.0)
-    assert engine._compute_effective_ttl(snapshot) == 1200.0  # pyright: ignore[reportPrivateUsage]
+    assert engine._inventory._compute_effective_ttl(snapshot) == 1200.0  # pyright: ignore[reportPrivateUsage]  # pyright: ignore[reportPrivateUsage]
 
 
 def test_very_slow_scan_caps_at_ceiling():
     engine = SearchEngine()
     snapshot = InventorySnapshot(files=[], directories=[], created_at=0.0, scan_duration_s=30.0)
-    assert engine._compute_effective_ttl(snapshot) == 1800.0  # pyright: ignore[reportPrivateUsage]
+    assert engine._inventory._compute_effective_ttl(snapshot) == 1800.0  # pyright: ignore[reportPrivateUsage]  # pyright: ignore[reportPrivateUsage]
 
 
 def test_scan_duration_persisted_and_loaded(tmp_path: Path):
@@ -778,17 +779,17 @@ def test_spot_check_extends_ttl_when_unchanged(tmp_path: Path):
             (PERSISTENT_INDEX_MAX_AGE_CEILING_S + 1,),
         )
     # Flush in-memory cache
-    engine._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]
+    engine._inventory._cache.clear()  # pyright: ignore[reportPrivateUsage]
 
     build_calls = 0
-    original_build = engine._build_inventory_snapshot  # pyright: ignore[reportPrivateUsage]
+    original_build = engine._inventory._build_snapshot  # pyright: ignore[reportPrivateUsage]
 
     def counting_build(*args: Any, **kwargs: Any) -> Any:
         nonlocal build_calls
         build_calls += 1
         return original_build(*args, **kwargs)
 
-    engine._build_inventory_snapshot = counting_build  # type: ignore[method-assign]
+    engine._inventory._build_snapshot = counting_build  # type: ignore[method-assign]
 
     # Second search — spot-check should pass, no rebuild
     results = list(engine.search_files(str(search_root), "file", search_within_files=False))
@@ -815,7 +816,7 @@ def test_spot_check_triggers_rescan_on_mtime_change(tmp_path: Path):
             "UPDATE inventories SET created_at = created_at - ?",
             (PERSISTENT_INDEX_MAX_AGE_CEILING_S + 1,),
         )
-    engine._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]
+    engine._inventory._cache.clear()  # pyright: ignore[reportPrivateUsage]
 
     # Modify the file so mtime changes
     target.write_text("modified", encoding="utf-8")
@@ -829,7 +830,7 @@ def test_spot_check_triggers_rescan_on_mtime_change(tmp_path: Path):
             progress_callback=statuses.append,
         )
     )
-    assert engine.BACKGROUND_REFRESH_STATUS in statuses
+    assert InventoryManager.BACKGROUND_REFRESH_STATUS in statuses
 
 
 def test_spot_check_triggers_rescan_on_delete(tmp_path: Path):
@@ -850,7 +851,7 @@ def test_spot_check_triggers_rescan_on_delete(tmp_path: Path):
             "UPDATE inventories SET created_at = created_at - ?",
             (PERSISTENT_INDEX_MAX_AGE_CEILING_S + 1,),
         )
-    engine._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]
+    engine._inventory._cache.clear()  # pyright: ignore[reportPrivateUsage]
 
     # Delete the file
     target.unlink()
@@ -864,7 +865,7 @@ def test_spot_check_triggers_rescan_on_delete(tmp_path: Path):
             progress_callback=statuses.append,
         )
     )
-    assert engine.BACKGROUND_REFRESH_STATUS in statuses
+    assert InventoryManager.BACKGROUND_REFRESH_STATUS in statuses
 
 
 def test_refresh_clears_cache_and_retriggers(qapp: QApplication):
@@ -1188,7 +1189,7 @@ def test_nested_gitignore_anchored_patterns(tmp_path: Path):
     # Call _walk_scandir directly to test gitignore logic without going through
     # the inventory snapshot path (which has a separate pre-existing bug).
     walked = list(
-        engine._walk_scandir(  # pyright: ignore[reportPrivateUsage]
+        engine._inventory._walk_scandir(  # pyright: ignore[reportPrivateUsage]
             str(tmp_path),
             max_depth=None,
             follow_symlinks=False,
@@ -1494,7 +1495,7 @@ def test_shutdown_stops_background_refresh(tmp_path: Path):
         )
 
     # Clear in-memory cache to force persistent index load
-    engine._inventory_cache.clear()  # pyright: ignore[reportPrivateUsage]
+    engine._inventory._cache.clear()  # pyright: ignore[reportPrivateUsage]
 
     # Trigger a search that will start a background refresh
     list(engine.search_files(str(search_root), "file", search_within_files=False))
@@ -1504,13 +1505,13 @@ def test_shutdown_stops_background_refresh(tmp_path: Path):
 
     deadline = monotonic() + 2.0
     while monotonic() < deadline:
-        with engine._inventory_refresh_lock:  # pyright: ignore[reportPrivateUsage]
-            if not engine._inventory_refreshes:  # pyright: ignore[reportPrivateUsage]
+        with engine._inventory._refresh_lock:  # pyright: ignore[reportPrivateUsage]
+            if not engine._inventory._refreshes:  # pyright: ignore[reportPrivateUsage]
                 break
         sleep(0.05)
 
-    with engine._inventory_refresh_lock:  # pyright: ignore[reportPrivateUsage]
-        assert not engine._inventory_refreshes, "Background refresh should have stopped"  # pyright: ignore[reportPrivateUsage]
+    with engine._inventory._refresh_lock:  # pyright: ignore[reportPrivateUsage]
+        assert not engine._inventory._refreshes, "Background refresh should have stopped"  # pyright: ignore[reportPrivateUsage]
 
 
 def test_always_binary_skip_no_sniff(tmp_path: Path):
