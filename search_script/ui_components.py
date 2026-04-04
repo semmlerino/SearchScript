@@ -611,7 +611,8 @@ class SearchUI(QMainWindow):
             self.include_entry.setText(inc)
             self.exclude_entry.setText(exc)
             if preset == "Large Files (>10MB)":
-                self.min_size_entry.setText("10485760")
+                self.min_size_entry.setText("10")
+                self.min_size_unit.setCurrentText("MB")
             else:
                 self.min_size_entry.clear()
 
