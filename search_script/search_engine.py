@@ -349,6 +349,11 @@ class SearchEngine:
                     ):
                         if cancel_event and cancel_event.is_set():
                             return
+                        remaining: int | None = None
+                        if max_results is not None:
+                            remaining = max_results - emitted_results
+                            if remaining <= 0:
+                                return
                         chunk = content_entries[
                             chunk_start : chunk_start + CONTENT_SEARCH_POOL_CHUNK_SIZE
                         ]
@@ -358,9 +363,16 @@ class SearchEngine:
                             fs: int,
                             mp: MatchPlan = match_plan,
                             cl: int = context_lines,
+                            mm: int | None = remaining,
                         ) -> list[SearchResult]:
                             return list(
-                                self._search_file_content(fp, mp, file_size=fs, context_lines=cl)
+                                self._search_file_content(
+                                    fp,
+                                    mp,
+                                    file_size=fs,
+                                    context_lines=cl,
+                                    max_matches=mm,
+                                )
                             )
 
                         future_to_entry = {
@@ -695,17 +707,26 @@ class SearchEngine:
         match_plan: MatchPlan,
         file_size: int = 0,
         context_lines: int = 0,
+        max_matches: int | None = None,
     ) -> Generator[SearchResult, None, None]:
         """Search within file content for the search term using optimized methods."""
         if file_size == 0:
             return
         if file_size > LARGE_FILE_MMAP_THRESHOLD:
             yield from self._search_large_file(
-                file_path, match_plan, file_size=file_size, context_lines=context_lines
+                file_path,
+                match_plan,
+                file_size=file_size,
+                context_lines=context_lines,
+                max_matches=max_matches,
             )
         else:
             yield from self._search_small_file(
-                file_path, match_plan, file_size=file_size, context_lines=context_lines
+                file_path,
+                match_plan,
+                file_size=file_size,
+                context_lines=context_lines,
+                max_matches=max_matches,
             )
 
     def _search_small_file(
@@ -714,12 +735,14 @@ class SearchEngine:
         match_plan: MatchPlan,
         file_size: int | None = None,
         context_lines: int = 0,
+        max_matches: int | None = None,
     ) -> Generator[SearchResult, None, None]:
         """Search small files using standard file reading."""
         try:
             encoding = self._detect_bom(file_path) or "utf-8"
             with open(file_path, encoding=encoding, errors="replace") as f:
                 lines = f.readlines()
+            yielded = 0
             for i, line in enumerate(lines):
                 result_tuple = self._score_match(line, match_plan, allow_partial_fuzzy=True)
                 if result_tuple is not None:
@@ -749,6 +772,9 @@ class SearchEngine:
                         match_start=match_start,
                         match_length=match_length,
                     )
+                    yielded += 1
+                    if max_matches is not None and yielded >= max_matches:
+                        return
         except PermissionError as e:
             raise FileAccessError(f"Permission denied reading file: {file_path}") from e
         except UnicodeDecodeError:
@@ -762,6 +788,7 @@ class SearchEngine:
         match_plan: MatchPlan,
         file_size: int | None = None,
         context_lines: int = 0,
+        max_matches: int | None = None,
     ) -> Generator[SearchResult, None, None]:
         """Search large files using memory mapping for better performance."""
         try:
@@ -771,6 +798,7 @@ class SearchEngine:
                         encoding = self._detect_bom(file_path) or "utf-8"
                         line_no = 0
                         pos = 0
+                        yielded = 0
                         maxlen = context_lines if context_lines > 0 else 0
                         prev_lines: deque[str] = deque(maxlen=maxlen)
                         while pos < len(mm):
@@ -827,13 +855,20 @@ class SearchEngine:
                                     match_start=match_start,
                                     match_length=match_length,
                                 )
+                                yielded += 1
+                                if max_matches is not None and yielded >= max_matches:
+                                    return
                             prev_lines.append(line_text.strip())
                             pos = end + 1
 
                 except (OSError, ValueError):
                     # Fallback to regular file reading if mmap fails
                     yield from self._search_small_file(
-                        file_path, match_plan, file_size=file_size, context_lines=context_lines
+                        file_path,
+                        match_plan,
+                        file_size=file_size,
+                        context_lines=context_lines,
+                        max_matches=max_matches,
                     )
 
         except PermissionError as e:

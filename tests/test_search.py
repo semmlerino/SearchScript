@@ -1776,3 +1776,21 @@ def test_explicit_max_workers_honored() -> None:
     """Explicit max_workers should override the dynamic default."""
     engine = SearchEngine(max_workers=7)
     assert engine.max_workers == 7
+
+
+def test_content_search_early_termination(tmp_path: Path) -> None:
+    """Content search should not scan entire file when max_results is low."""
+    (tmp_path / "big.txt").write_text("\n".join(f"needle line {i}" for i in range(1000)))
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "needle",
+            search_within_files=True,
+            search_mode=SearchMode.SUBSTRING,
+            search_backend=SearchBackend.PYTHON,
+            max_results=3,
+        )
+    )
+    assert len(results) == 3
