@@ -30,6 +30,7 @@ DEFAULT_MAX_WORKERS_CAP = 48  # max threads for I/O-bound parallel search
 
 # Parallel content search
 CONTENT_SEARCH_POOL_CHUNK_SIZE = 200
+INVENTORY_WALK_MAX_WORKERS = 56  # parallel directory walk threads
 
 # Result queue / UI update timing
 RESULT_BATCH_SIZE = 100

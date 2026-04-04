@@ -1,11 +1,14 @@
 """InventoryManager: caching, TTL, spot-check, background refresh, and filesystem walk."""
 
+import contextlib
 import heapq
 import logging
 import os
+import queue
 import threading
 from collections.abc import Callable, Generator
-from dataclasses import replace
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, replace
 from pathlib import Path
 from time import time
 
@@ -17,6 +20,7 @@ from .constants import (
     INVENTORY_CACHE_MAX_ENTRIES,
     INVENTORY_CACHE_TTL_S,
     INVENTORY_PROGRESS_MILESTONE,
+    INVENTORY_WALK_MAX_WORKERS,
     PERSISTENT_INDEX_MAX_AGE_CEILING_S,
     PERSISTENT_INDEX_MAX_AGE_S,
     SPOT_CHECK_SAMPLE_SIZE,
@@ -27,6 +31,13 @@ from .search_index import (
     InventorySnapshot,
     SearchIndexStore,
 )
+
+
+@dataclass
+class _WalkWorkItem:
+    directory: str
+    depth: int
+    gitignore_specs: list[tuple[str, pathspec.PathSpec]]
 
 
 class InventoryManager:
@@ -272,45 +283,19 @@ class InventoryManager:
         exclude_shots: bool = True,
     ) -> InventorySnapshot | None:
         """Build a file inventory for repeated scan-based searches."""
-        if progress_callback:
-            progress_callback(f"Building file inventory: {directory}")
-
         scan_start = time()
-        files: list[InventoryEntry] = []
-        directories: list[str] = []
-        files_indexed = 0
-        for dir_path, entry in self._walk_scandir(
-            directory,
-            max_depth,
-            follow_symlinks,
-            cancel_event,
-            include_ignored,
+
+        files, directories = self._walk_parallel(
+            directory=directory,
+            max_depth=max_depth,
+            follow_symlinks=follow_symlinks,
+            cancel_event=cancel_event,
+            include_ignored=include_ignored,
             exclude_shots=exclude_shots,
-        ):
-            if cancel_event and cancel_event.is_set():
-                return None
-            if entry is None:
-                directories.append(dir_path)
-                continue
-
-            try:
-                entry_stat = entry.stat(follow_symlinks=follow_symlinks)
-            except OSError:
-                continue
-
-            files.append(
-                InventoryEntry(
-                    file_path=entry.path,
-                    parent_dir=dir_path,
-                    file_name=entry.name,
-                    file_lower=entry.name.lower(),
-                    mod_time=entry_stat.st_mtime,
-                    file_size=entry_stat.st_size,
-                )
-            )
-            files_indexed += 1
-            if progress_callback and files_indexed % INVENTORY_PROGRESS_MILESTONE == 0:
-                progress_callback(f"Indexed {files_indexed} files in {directory}")
+            progress_callback=progress_callback,
+        )
+        if cancel_event and cancel_event.is_set():
+            return None
 
         return InventorySnapshot(
             files=files,
@@ -405,3 +390,198 @@ class InventoryManager:
                 _seen_realpaths,
                 _gitignore_specs,
             )
+
+    def _walk_parallel(
+        self,
+        directory: str,
+        max_depth: int | None,
+        follow_symlinks: bool,
+        cancel_event: threading.Event | None,
+        include_ignored: bool = True,
+        exclude_shots: bool = True,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> tuple[list[InventoryEntry], list[str]]:
+        """Walk directory tree in parallel using a BFS thread-pool approach.
+
+        Returns (files, directories) lists directly — not a generator.
+        """
+        max_workers = min(INVENTORY_WALK_MAX_WORKERS, (os.cpu_count() or 4) * 2)
+
+        all_files: list[InventoryEntry] = []
+        all_dirs: list[str] = []
+        files_lock = threading.Lock()
+        seen_realpaths: set[str] = {os.path.realpath(directory)}
+        seen_lock = threading.Lock()
+
+        files_indexed = 0
+
+        if progress_callback:
+            progress_callback(f"Building file inventory: {directory}")
+
+        results_queue: queue.Queue[
+            tuple[list[InventoryEntry], list[str], list[_WalkWorkItem]]
+        ] = queue.Queue()
+
+        pending_count = 0
+        count_lock = threading.Lock()
+        done_event = threading.Event()
+
+        def _process_directory(
+            work: _WalkWorkItem,
+        ) -> tuple[list[InventoryEntry], list[str], list[_WalkWorkItem]]:
+            local_files: list[InventoryEntry] = []
+            local_dirs: list[str] = []
+            sub_items: list[_WalkWorkItem] = []
+
+            if cancel_event and cancel_event.is_set():
+                return local_files, local_dirs, sub_items
+
+            current_gitignore_specs = work.gitignore_specs
+
+            if not include_ignored:
+                gitignore_path = os.path.join(work.directory, ".gitignore")
+                if os.path.isfile(gitignore_path):
+                    try:
+                        with open(gitignore_path) as f:
+                            new_spec = pathspec.PathSpec.from_lines("gitignore", f)
+                        current_gitignore_specs = [
+                            *current_gitignore_specs,
+                            (work.directory, new_spec),
+                        ]
+                    except OSError:
+                        pass
+
+            local_dirs.append(work.directory)
+
+            try:
+                with os.scandir(work.directory) as entries:
+                    for entry in entries:
+                        if cancel_event and cancel_event.is_set():
+                            return local_files, local_dirs, sub_items
+                        try:
+                            if current_gitignore_specs:
+                                ignored = False
+                                for spec_dir, spec in current_gitignore_specs:
+                                    rel_path = entry.path[len(spec_dir) :].lstrip(os.sep)
+                                    if entry.is_dir(follow_symlinks=follow_symlinks):
+                                        if spec.match_file(rel_path + "/"):
+                                            ignored = True
+                                            break
+                                    elif spec.match_file(rel_path):
+                                        ignored = True
+                                        break
+                                if ignored:
+                                    continue
+
+                            if entry.is_file(follow_symlinks=follow_symlinks):
+                                try:
+                                    entry_stat = entry.stat(follow_symlinks=follow_symlinks)
+                                except OSError:
+                                    continue
+                                local_files.append(
+                                    InventoryEntry(
+                                        file_path=entry.path,
+                                        parent_dir=work.directory,
+                                        file_name=entry.name,
+                                        file_lower=entry.name.lower(),
+                                        mod_time=entry_stat.st_mtime,
+                                        file_size=entry_stat.st_size,
+                                    )
+                                )
+                            elif entry.is_dir(follow_symlinks=follow_symlinks):
+                                if exclude_shots and entry.name == "shots":
+                                    continue
+                                if max_depth is not None and work.depth + 1 > max_depth:
+                                    continue
+                                subdir_path = entry.path
+                                if follow_symlinks:
+                                    real = os.path.realpath(subdir_path)
+                                    with seen_lock:
+                                        if real in seen_realpaths:
+                                            continue
+                                        seen_realpaths.add(real)
+                                sub_items.append(
+                                    _WalkWorkItem(
+                                        directory=subdir_path,
+                                        depth=work.depth + 1,
+                                        gitignore_specs=current_gitignore_specs,
+                                    )
+                                )
+                        except OSError:
+                            continue
+            except (PermissionError, OSError):
+                pass
+
+            return local_files, local_dirs, sub_items
+
+        def _on_done(
+            fut: Future[tuple[list[InventoryEntry], list[str], list[_WalkWorkItem]]],
+        ) -> None:
+            with contextlib.suppress(Exception):  # OSError from scandir, etc.
+                results_queue.put(fut.result())
+            with count_lock:
+                nonlocal pending_count
+                pending_count -= 1
+                if pending_count == 0:
+                    done_event.set()
+
+        initial_work = _WalkWorkItem(directory=directory, depth=0, gitignore_specs=[])
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with count_lock:
+                pending_count = 1
+            fut = executor.submit(_process_directory, initial_work)
+            fut.add_done_callback(_on_done)
+
+            while not done_event.is_set():
+                if cancel_event and cancel_event.is_set():
+                    break
+                done_event.wait(timeout=0.1)
+                # Drain results queue
+                while not results_queue.empty():
+                    try:
+                        files, dirs, sub_items = results_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    with files_lock:
+                        all_files.extend(files)
+                        all_dirs.extend(dirs)
+                        files_indexed += len(files)
+                    if progress_callback and files_indexed % INVENTORY_PROGRESS_MILESTONE == 0:
+                        progress_callback(f"Indexed {files_indexed} files in {directory}")
+                    for item in sub_items:
+                        with count_lock:
+                            pending_count += 1
+                            done_event.clear()
+                        f = executor.submit(_process_directory, item)
+                        f.add_done_callback(_on_done)
+
+            # Final drain after done_event is set
+            while not results_queue.empty():
+                try:
+                    files, dirs, sub_items = results_queue.get_nowait()
+                except queue.Empty:
+                    break
+                with files_lock:
+                    all_files.extend(files)
+                    all_dirs.extend(dirs)
+                for item in sub_items:
+                    with count_lock:
+                        pending_count += 1
+                        done_event.clear()
+                    f = executor.submit(_process_directory, item)
+                    f.add_done_callback(_on_done)
+
+            # If we submitted more work in final drain, wait again
+            if pending_count > 0:
+                done_event.wait()
+                while not results_queue.empty():
+                    try:
+                        files, dirs, _ = results_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    with files_lock:
+                        all_files.extend(files)
+                        all_dirs.extend(dirs)
+
+        return all_files, all_dirs

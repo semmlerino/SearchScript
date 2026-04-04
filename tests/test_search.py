@@ -5,6 +5,7 @@ import os
 import queue
 import shutil
 import sqlite3
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import monotonic, sleep
@@ -1794,3 +1795,113 @@ def test_content_search_early_termination(tmp_path: Path) -> None:
         )
     )
     assert len(results) == 3
+
+
+def test_parallel_walk_matches_serial_walk(tmp_path: Path) -> None:
+    """_walk_parallel should produce the same files and directories as _walk_scandir."""
+    # Build a multi-level directory tree with 10+ files across 3+ levels
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "b").mkdir()
+    (tmp_path / "a" / "b" / "c").mkdir()
+    (tmp_path / "x").mkdir()
+
+    for i in range(4):
+        (tmp_path / f"root_{i}.txt").write_text(f"root file {i}")
+    for i in range(3):
+        (tmp_path / "a" / f"a_{i}.txt").write_text(f"a file {i}")
+    for i in range(2):
+        (tmp_path / "a" / "b" / f"b_{i}.txt").write_text(f"b file {i}")
+    (tmp_path / "a" / "b" / "c" / "deep.txt").write_text("deep")
+    (tmp_path / "x" / "x_file.txt").write_text("x file")
+
+    engine = SearchEngine()
+    inventory: InventoryManager = engine._inventory  # pyright: ignore[reportPrivateUsage]
+    cancel = threading.Event()
+
+    # Collect results from the serial walker
+    serial_files: set[str] = set()
+    serial_dirs: set[str] = set()
+    for dir_path, entry in inventory._walk_scandir(  # pyright: ignore[reportPrivateUsage]
+        str(tmp_path),
+        max_depth=None,
+        follow_symlinks=False,
+        cancel_event=cancel,
+        include_ignored=True,
+        exclude_shots=False,
+    ):
+        if entry is None:
+            serial_dirs.add(dir_path)
+        else:
+            serial_files.add(entry.path)
+
+    # Collect results from the parallel walker
+    par_entries, par_dirs_list = inventory._walk_parallel(  # pyright: ignore[reportPrivateUsage]
+        str(tmp_path),
+        max_depth=None,
+        follow_symlinks=False,
+        cancel_event=cancel,
+        include_ignored=True,
+        exclude_shots=False,
+    )
+    parallel_files = {e.file_path for e in par_entries}
+    parallel_dirs = set(par_dirs_list)
+
+    assert parallel_files == serial_files
+    assert parallel_dirs == serial_dirs
+
+
+def test_parallel_walk_gitignore_correctness(tmp_path: Path) -> None:
+    """_walk_parallel should respect .gitignore patterns when include_ignored=False."""
+    (tmp_path / ".gitignore").write_text("*.log\n")
+    (tmp_path / "a.txt").write_text("text file")
+    (tmp_path / "b.log").write_text("log file")
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+    (subdir / "c.txt").write_text("sub text")
+    (subdir / "d.log").write_text("sub log")
+
+    engine = SearchEngine()
+    inventory: InventoryManager = engine._inventory  # pyright: ignore[reportPrivateUsage]
+    cancel = threading.Event()
+
+    par_entries, _ = inventory._walk_parallel(  # pyright: ignore[reportPrivateUsage]
+        str(tmp_path),
+        max_depth=None,
+        follow_symlinks=False,
+        cancel_event=cancel,
+        include_ignored=False,
+        exclude_shots=False,
+    )
+    result_paths = {e.file_path for e in par_entries}
+
+    assert str(tmp_path / "a.txt") in result_paths
+    assert str(subdir / "c.txt") in result_paths
+    assert str(tmp_path / "b.log") not in result_paths
+    assert str(subdir / "d.log") not in result_paths
+
+
+def test_parallel_walk_symlink_cycle_safe(tmp_path: Path) -> None:
+    """_walk_parallel should detect symlink cycles and not hang."""
+    a_dir = tmp_path / "a"
+    b_dir = a_dir / "b"
+    b_dir.mkdir(parents=True)
+    (b_dir / "real_file.txt").write_text("real content")
+    # Create a symlink that points back up to 'a', creating a cycle
+    (b_dir / "loop").symlink_to(a_dir)
+
+    engine = SearchEngine()
+    inventory: InventoryManager = engine._inventory  # pyright: ignore[reportPrivateUsage]
+    cancel = threading.Event()
+
+    par_entries, _ = inventory._walk_parallel(  # pyright: ignore[reportPrivateUsage]
+        str(tmp_path),
+        max_depth=None,
+        follow_symlinks=True,
+        cancel_event=cancel,
+        include_ignored=True,
+        exclude_shots=False,
+    )
+    result_paths = {e.file_path for e in par_entries}
+
+    # Should complete without hanging and find the real file
+    assert str(b_dir / "real_file.txt") in result_paths
