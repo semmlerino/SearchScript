@@ -676,7 +676,7 @@ def test_slow_scan_scales_ttl():
 def test_very_slow_scan_caps_at_ceiling():
     engine = SearchEngine()
     snapshot = InventorySnapshot(files=[], directories=[], created_at=0.0, scan_duration_s=30.0)
-    assert engine._inventory._compute_effective_ttl(snapshot) == 1800.0  # pyright: ignore[reportPrivateUsage]  # pyright: ignore[reportPrivateUsage]
+    assert engine._inventory._compute_effective_ttl(snapshot) == 3600.0  # pyright: ignore[reportPrivateUsage]  # pyright: ignore[reportPrivateUsage]
 
 
 def test_scan_duration_persisted_and_loaded(tmp_path: Path):
