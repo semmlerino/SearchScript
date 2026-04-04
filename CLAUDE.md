@@ -21,19 +21,21 @@ uv run basedpyright                    # Type check
 
 MVC pattern. Thread results are delivered via `queue.Queue` polled by `QTimer`, not Qt signals. `ui_components.py` uses signals internally for widget communication.
 
+All source lives under `search_script/`.
+
 | File | Owns |
 |---|---|
-| `main.py` | CLI entry point. Connects `app.aboutToQuit` to `search_engine.shutdown()` — required for clean teardown. |
-| `search_controller.py` | `SearchController` — orchestrator. Wires UI callbacks to search operations, manages the worker thread and result queue, tracks search history. |
-| `ui_components.py` | `SearchUI (QMainWindow)` — pure view. Exposes callback slots (`on_search_start`, `on_search_cancel`, etc.) that the controller assigns. Owns all widgets and export logic. |
-| `search_engine.py` | `SearchEngine` — core search logic. Generator-based (`yield SearchResult`), supports cancellation via `threading.Event`, uses `mmap` for files >1 MB. Delegates to `RipgrepBackend` for non-fuzzy searches when `rg` is available. |
-| `ripgrep_backend.py` | `RipgrepBackend` — wraps `rg` subprocess for both content and filename search (`search` and `search_filenames`), parses JSON output, builds type/depth/context flags. Auto-detected via `shutil.which("rg")` at startup; falls back to Python backend for fuzzy mode or when `rg` is absent. |
-| `inventory.py` | `InventoryManager` — dual-layer file cache (see Caching below). |
-| `search_index.py` | `SearchIndexStore` — SQLite persistence backing the inventory cache. Also defines `InventoryCacheKey`, `InventoryEntry`, `InventorySnapshot`, `InventoryLoadResult` dataclasses. |
-| `models.py` | Dataclasses and enums: `SearchResult`, `SearchMode`, `SearchBackend`, `MatchPlan`, `SearchParams`, queue message types (`ResultBatchMsg`, `DoneMsg`, `ErrorMsg`, `CancelledMsg`, `StatusMsg`, `LimitReachedMsg`), and helpers (`check_file_filters`, `truncate_line`, `ensure_glob_wildcard`). |
-| `constants.py` | All tunable thresholds and sizes (TTLs, batch sizes, fuzzy thresholds, etc.). |
-| `config.py` | Custom exception hierarchy: `SearchError`, `DirectoryError`, `FileAccessError`, `ValidationError`. |
-| `file_utils.py` | `FileOperations` (platform-aware file/folder opening), `LoggingConfig`. |
+| `search_script/main.py` | CLI entry point. Connects `app.aboutToQuit` to `search_engine.shutdown()` — required for clean teardown. |
+| `search_script/search_controller.py` | `SearchController` — orchestrator. Wires UI callbacks to search operations, manages the worker thread and result queue, tracks search history. |
+| `search_script/ui_components.py` | `SearchUI (QMainWindow)` — pure view. Exposes callback slots (`on_search_start`, `on_search_cancel`, etc.) that the controller assigns. Owns all widgets and export logic. |
+| `search_script/search_engine.py` | `SearchEngine` — core search logic. Generator-based (`yield SearchResult`), supports cancellation via `threading.Event`, uses `mmap` for files >1 MB. Delegates to `RipgrepBackend` for non-fuzzy searches when `rg` is available. |
+| `search_script/ripgrep_backend.py` | `RipgrepBackend` — wraps `rg` subprocess for both content and filename search (`search` and `search_filenames`), parses JSON output, builds type/depth/context flags. Auto-detected via `shutil.which("rg")` at startup; falls back to Python backend for fuzzy mode or when `rg` is absent. |
+| `search_script/inventory.py` | `InventoryManager` — dual-layer file cache (see Caching below). |
+| `search_script/search_index.py` | `SearchIndexStore` — SQLite persistence backing the inventory cache. Also defines `InventoryCacheKey`, `InventoryEntry`, `InventorySnapshot`, `InventoryLoadResult` dataclasses. |
+| `search_script/models.py` | Dataclasses and enums: `SearchResult`, `SearchMode`, `SearchBackend`, `MatchPlan`, `SearchParams`, queue message types (`ResultBatchMsg`, `DoneMsg`, `ErrorMsg`, `CancelledMsg`, `StatusMsg`, `LimitReachedMsg`), and helpers (`check_file_filters`, `truncate_line`, `ensure_glob_wildcard`). |
+| `search_script/constants.py` | All tunable thresholds and sizes (TTLs, batch sizes, fuzzy thresholds, etc.). |
+| `search_script/config.py` | Custom exception hierarchy: `SearchError`, `DirectoryError`, `FileAccessError`, `ValidationError`. |
+| `search_script/file_utils.py` | `FileOperations` (platform-aware file/folder opening), `LoggingConfig`. |
 
 ## Key Patterns
 
