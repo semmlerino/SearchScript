@@ -1759,3 +1759,20 @@ def test_ripgrep_filename_search_falls_back_when_unavailable(tmp_path: Path) -> 
         )
     )
     assert len(results) == 1
+
+
+def test_default_max_workers_scales_with_cpu_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default max_workers should scale with CPU count, capped at 16."""
+    monkeypatch.setattr(os, "cpu_count", lambda: 32)
+    engine = SearchEngine()
+    assert engine.max_workers == 16
+
+    monkeypatch.setattr(os, "cpu_count", lambda: 2)
+    engine2 = SearchEngine()
+    assert engine2.max_workers == 2
+
+
+def test_explicit_max_workers_honored() -> None:
+    """Explicit max_workers should override the dynamic default."""
+    engine = SearchEngine(max_workers=7)
+    assert engine.max_workers == 7

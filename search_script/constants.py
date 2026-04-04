@@ -25,6 +25,9 @@ FUZZY_FULL_THRESHOLD = 80.0
 FUZZY_EXACT_BONUS = 4.0  # boost for exact-substring containment
 FUZZY_WORD_BONUS = 2.0  # boost for whole-word boundary match
 
+# Worker thread scaling
+DEFAULT_MAX_WORKERS_CAP = 16  # max threads for I/O-bound parallel search
+
 # Parallel content search
 CONTENT_SEARCH_POOL_CHUNK_SIZE = 50
 

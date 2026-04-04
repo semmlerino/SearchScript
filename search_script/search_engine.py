@@ -21,6 +21,7 @@ except ImportError:
 from .config import DirectoryError, FileAccessError, SearchError, ValidationError
 from .constants import (
     CONTENT_SEARCH_POOL_CHUNK_SIZE,
+    DEFAULT_MAX_WORKERS_CAP,
     FUZZY_EXACT_BONUS,
     FUZZY_FULL_THRESHOLD,
     FUZZY_PARTIAL_THRESHOLD,
@@ -68,10 +69,12 @@ class SearchEngine:
     def __init__(
         self,
         logger: logging.Logger | None = None,
-        max_workers: int = 4,
+        max_workers: int | None = None,
         index_db_path: str | Path | None = None,
     ):
         self.logger = logger or logging.getLogger(__name__)
+        if max_workers is None:
+            max_workers = min(os.cpu_count() or 4, DEFAULT_MAX_WORKERS_CAP)
         self.max_workers = max_workers
         self._rg_path = shutil.which("rg")
         self._inventory = InventoryManager(self.logger, index_db_path=index_db_path)
