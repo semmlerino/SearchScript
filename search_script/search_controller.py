@@ -9,6 +9,7 @@ from PySide6.QtCore import QTimer
 from .constants import (
     PROCESS_RESULTS_TIME_BUDGET_S,
     RESULT_BATCH_SIZE,
+    RESULT_FIRST_BATCH_SIZE,
     RESULT_POLL_BACKOFF_DELAY_MS,
     RESULT_POLL_INITIAL_DELAY_MS,
 )
@@ -123,6 +124,7 @@ class SearchController:
         try:
             count = 0
             batch: list[SearchResult] = []
+            first_flushed = False
 
             def progress_callback(message: str):
                 self.result_queue.put(("status", message))
@@ -170,8 +172,10 @@ class SearchController:
                     return
                 batch.append(result)
                 count += 1
-                if len(batch) >= RESULT_BATCH_SIZE:
+                threshold = RESULT_FIRST_BATCH_SIZE if not first_flushed else RESULT_BATCH_SIZE
+                if len(batch) >= threshold:
                     flush_batch()
+                    first_flushed = True
 
             flush_batch()
             self.result_queue.put(("done", count))

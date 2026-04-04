@@ -8,6 +8,7 @@ import re
 from PySide6.QtCore import QPoint, QSettings, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDateEdit,
@@ -64,7 +65,7 @@ class SearchUI(QMainWindow):
         self._setup_ui()
         self._load_settings()
 
-    def _load_settings(self):
+    def _load_settings(self) -> None:
         """Load user settings."""
         settings = QSettings("SearchScript", "EnhancedFileSearch")
         last_dir = settings.value("last_directory", "")
@@ -73,15 +74,31 @@ class SearchUI(QMainWindow):
             self.dir_entry.setText(last_dir)
         if isinstance(last_search, str):
             self.search_entry.setText(last_search)
+        mode_index = settings.value("search_mode_index")
+        if isinstance(mode_index, int) and 0 <= mode_index < self.mode_combo.count():
+            self.mode_combo.setCurrentIndex(mode_index)
+        backend_index = settings.value("search_backend_index")
+        if isinstance(backend_index, int) and 0 <= backend_index < self.backend_combo.count():
+            self.backend_combo.setCurrentIndex(backend_index)
+        within_files = settings.value("search_within_files")
+        if isinstance(within_files, bool):
+            self.within_checkbox.setChecked(within_files)
+        geometry = settings.value("window_geometry")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Save user settings on close."""
         settings = QSettings("SearchScript", "EnhancedFileSearch")
         settings.setValue("last_directory", self.dir_entry.text())
         settings.setValue("last_search_term", self.search_entry.text())
+        settings.setValue("search_mode_index", self.mode_combo.currentIndex())
+        settings.setValue("search_backend_index", self.backend_combo.currentIndex())
+        settings.setValue("search_within_files", self.within_checkbox.isChecked())
+        settings.setValue("window_geometry", self.saveGeometry())
         super().closeEvent(event)
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         """Initialize the UI components."""
         self.setWindowTitle("Enhanced File Search Tool")
         self.resize(1200, 700)
@@ -95,6 +112,19 @@ class SearchUI(QMainWindow):
         self._create_directory_row()
         self._create_search_row()
         self._create_options_section()
+
+        self._advanced_toggle = QPushButton("Show Advanced Filters")
+        self._advanced_toggle.setCheckable(True)
+        self._advanced_toggle.setChecked(False)
+        self._advanced_toggle.clicked.connect(self._toggle_advanced_filters)
+        self._main_layout.addWidget(self._advanced_toggle)
+
+        self._advanced_container = QWidget()
+        self._advanced_layout = QVBoxLayout(self._advanced_container)
+        self._advanced_layout.setContentsMargins(0, 0, 0, 0)
+        self._advanced_container.setVisible(False)
+        self._main_layout.addWidget(self._advanced_container)
+
         self._create_advanced_filters_row()
         self._create_progress_row()
         self._create_button_row()
@@ -173,7 +203,7 @@ class SearchUI(QMainWindow):
         self.exclude_entry.setPlaceholderText(".log, .tmp")
         self._main_layout.addWidget(self.exclude_entry)
 
-    def _create_advanced_filters_row(self):
+    def _create_advanced_filters_row(self) -> None:
         """Create advanced filters row."""
         row = QHBoxLayout()
 
@@ -223,7 +253,7 @@ class SearchUI(QMainWindow):
         row.addWidget(self.context_lines_spin)
         row.addStretch()
 
-        self._main_layout.addLayout(row)
+        self._advanced_layout.addLayout(row)
 
         # Date filter row
         date_row = QHBoxLayout()
@@ -250,7 +280,7 @@ class SearchUI(QMainWindow):
         date_row.addWidget(self.clear_dates_btn)
         date_row.addStretch()
 
-        self._main_layout.addLayout(date_row)
+        self._advanced_layout.addLayout(date_row)
 
     def _create_progress_row(self):
         """Create progress bar and status label."""
@@ -457,6 +487,12 @@ class SearchUI(QMainWindow):
             toggle_action.triggered.connect(lambda: item.setExpanded(not item.isExpanded()))
         open_action = menu.addAction("Open Containing Folder")
         open_action.triggered.connect(self._on_open_containing_folder)
+        copy_path_action = menu.addAction("Copy File Path")
+        copy_path_action.triggered.connect(self._copy_file_path)
+        # Only show "Copy Matching Line" for non-group items with line_content
+        if isinstance(result, dict) and not result.get("is_group") and result.get("line_content"):  # pyright: ignore[reportUnknownMemberType]
+            copy_line_action = menu.addAction("Copy Matching Line")
+            copy_line_action.triggered.connect(self._copy_matching_line)
         menu.exec(self.results_tree.viewport().mapToGlobal(pos))  # pyright: ignore[reportUnknownArgumentType,reportArgumentType]
 
     def _on_open_containing_folder(self):
@@ -471,8 +507,53 @@ class SearchUI(QMainWindow):
             file_path = result.get("file_path", item.text(0))  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
         self.open_folder_requested.emit(file_path)  # pyright: ignore[reportUnknownArgumentType]
 
-    def _apply_preset(self, preset: str):
+    def _copy_file_path(self) -> None:
+        """Copy the file path of the selected item to clipboard."""
+        item = self.results_tree.currentItem()
+        if not item:
+            return
+        result = item.data(0, RESULT_ROLE)  # pyright: ignore[reportUnknownMemberType]
+        if isinstance(result, dict):
+            file_path = result.get("file_path", item.text(0))  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        else:
+            # Context line — get path from parent
+            parent = item.parent()
+            if parent is not None:  # pyright: ignore[reportUnnecessaryComparison]
+                parent_result = parent.data(0, RESULT_ROLE)  # pyright: ignore[reportUnknownMemberType]
+                if isinstance(parent_result, dict):
+                    file_path = parent_result.get("file_path", parent.text(0))  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+                else:
+                    file_path = parent.text(0)
+            else:
+                file_path = item.text(0)
+        QApplication.clipboard().setText(str(file_path))  # pyright: ignore[reportUnknownArgumentType]
+
+    def _copy_matching_line(self) -> None:
+        """Copy the matching line text to clipboard."""
+        item = self.results_tree.currentItem()
+        if not item:
+            return
+        result = item.data(0, RESULT_ROLE)  # pyright: ignore[reportUnknownMemberType]
+        if isinstance(result, dict):
+            line_content = result.get("line_content", "")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+            if line_content:
+                QApplication.clipboard().setText(str(line_content))  # pyright: ignore[reportUnknownArgumentType]
+
+    def _apply_preset(self, preset: str) -> None:
         """Apply a file type preset."""
+        # Clear stale advanced filter state
+        self.min_size_entry.clear()
+        self.max_size_entry.clear()
+        self.depth_entry.clear()
+        self.max_results_entry.clear()
+        self.modified_after_entry.setDate(self.modified_after_entry.minimumDate())
+        self.modified_before_entry.setDate(self.modified_before_entry.minimumDate())
+
+        if not preset:
+            self.include_entry.clear()
+            self.exclude_entry.clear()
+            return
+
         presets = {
             "Images": (".jpg, .jpeg, .png, .gif, .bmp, .tiff, .svg, .webp", ""),
             "Code": (".py, .js, .ts, .java, .cpp, .c, .h, .cs, .go, .rs, .rb, .sh", ""),
@@ -488,6 +569,12 @@ class SearchUI(QMainWindow):
             if preset == "Large Files (>10MB)":
                 self.min_size_entry.setText("10485760")
                 self.include_entry.setText("")
+
+    def _toggle_advanced_filters(self, checked: bool) -> None:
+        """Toggle visibility of advanced filter options."""
+        self._advanced_container.setVisible(checked)
+        label = "Hide Advanced Filters" if checked else "Show Advanced Filters"
+        self._advanced_toggle.setText(label)
 
     # --- Public API ---
 
