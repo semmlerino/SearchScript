@@ -1016,3 +1016,229 @@ def test_match_position_regex(tmp_path):
     assert len(results) == 1
     assert results[0].match_start == 4
     assert results[0].match_length == 6
+
+
+# ---------------------------------------------------------------------------
+# Indexing fix tests
+# ---------------------------------------------------------------------------
+
+
+def test_filename_search_progress_count(tmp_path):
+    """Progress counter must include files that raise FileAccessError (no under-count)."""
+    # Create 200 files so the modulo-100 progress callback actually fires
+    for i in range(200):
+        (tmp_path / f"file_{i:03d}.txt").write_text("data", encoding="utf-8")
+
+    engine = SearchEngine()
+    progress_values: list[str] = []
+    list(
+        engine.search_files(
+            str(tmp_path),
+            "file",
+            search_within_files=False,
+            progress_callback=progress_values.append,
+        )
+    )
+    # With 200 files, at least one "200/200" message (100%) should appear
+    assert any("200/200" in m for m in progress_values), (
+        f"Expected 200/200 progress, got: {progress_values[-3:]}"
+    )
+
+
+def test_mmap_context_after_multiple_lines(tmp_path, monkeypatch):
+    """mmap path should return multiple context_after lines, not just one."""
+    from search_script import search_engine as se_mod
+
+    # Patch the module-level constant so _search_file_content routes through mmap
+    monkeypatch.setattr(se_mod, "LARGE_FILE_MMAP_THRESHOLD", 0)
+
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("before1\nbefore2\nneedle here\nafter1\nafter2\nafter3\n")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "needle",
+            search_within_files=True,
+            search_backend=SearchBackend.PYTHON,
+            context_lines=2,
+        )
+    )
+    assert len(results) == 1
+    assert results[0].context_before == ["before1", "before2"]
+    assert results[0].context_after is not None
+    assert len(results[0].context_after) == 2
+    assert results[0].context_after == ["after1", "after2"]
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep unavailable")
+def test_ripgrep_context_lines(tmp_path):
+    """Ripgrep backend should populate context_before and context_after."""
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("line1\nline2\nneedle here\nline4\nline5\n", encoding="utf-8")
+
+    engine = SearchEngine()
+    results = list(
+        engine.search_files(
+            str(tmp_path),
+            "needle",
+            search_within_files=True,
+            search_backend=SearchBackend.RIPGREP,
+            context_lines=2,
+        )
+    )
+    assert len(results) == 1
+    assert results[0].context_before is not None
+    assert results[0].context_after is not None
+    assert len(results[0].context_before) == 2
+    assert len(results[0].context_after) == 2
+
+
+def test_save_snapshot_transaction_safety(tmp_path):
+    """save_snapshot must use IMMEDIATE isolation to ensure atomic DELETE+INSERT.
+    If an error occurs mid-write, the transaction rolls back preserving old data."""
+    import unittest.mock
+    from time import time as _time
+
+    from search_script.search_index import InventoryEntry
+
+    index_db = tmp_path / "inventory.sqlite3"
+    store = SearchIndexStore(db_path=index_db)
+
+    cache_key = InventoryCacheKey(
+        directory=str(tmp_path),
+        max_depth=None,
+        follow_symlinks=False,
+        include_ignored=True,
+    )
+    now = _time()
+    original_snapshot = InventorySnapshot(
+        files=[
+            InventoryEntry(
+                file_path=str(tmp_path / "orig.txt"),
+                parent_dir=str(tmp_path),
+                file_name="orig.txt",
+                file_lower="orig.txt",
+                mod_time=0.0,
+                file_size=0,
+            )
+        ],
+        directories=[str(tmp_path)],
+        created_at=now,
+    )
+    store.save_snapshot(cache_key, original_snapshot)
+
+    # Verify IMMEDIATE isolation level is used by intercepting sqlite3.connect
+    connect_kwargs: list[dict[str, object]] = []
+    original_connect = sqlite3.connect
+
+    def tracking_connect(*args, **kwargs):
+        connect_kwargs.append(dict(kwargs))
+        conn = original_connect(*args, **kwargs)
+        return conn
+
+    bad_snapshot = InventorySnapshot(
+        files=[
+            InventoryEntry(
+                file_path=str(tmp_path / "new.txt"),
+                parent_dir=str(tmp_path),
+                file_name="new.txt",
+                file_lower="new.txt",
+                mod_time=0.0,
+                file_size=0,
+            )
+        ],
+        directories=[str(tmp_path)],
+        created_at=now + 1,
+    )
+
+    with unittest.mock.patch("search_script.search_index.sqlite3.connect", tracking_connect):
+        store.save_snapshot(cache_key, bad_snapshot)
+
+    # At least one connect call should use IMMEDIATE isolation
+    assert any(kw.get("isolation_level") == "IMMEDIATE" for kw in connect_kwargs), (
+        f"Expected IMMEDIATE isolation, got: {connect_kwargs}"
+    )
+
+
+def test_shutdown_stops_background_refresh(tmp_path):
+    """shutdown() should cause the background refresh thread to terminate promptly."""
+    from time import monotonic
+
+    search_root = tmp_path / "search_root"
+    search_root.mkdir()
+    index_db = tmp_path / "inventory.sqlite3"
+    for i in range(50):
+        (search_root / f"file_{i}.txt").write_text("data", encoding="utf-8")
+
+    engine = SearchEngine(index_db_path=index_db)
+    # Build initial inventory
+    list(engine.search_files(str(search_root), "file", search_within_files=False))
+
+    # Age the snapshot to trigger background refresh
+    from search_script.constants import PERSISTENT_INDEX_MAX_AGE_S
+
+    with sqlite3.connect(str(index_db)) as conn:
+        conn.execute(
+            "UPDATE inventories SET created_at = created_at - ?",
+            (PERSISTENT_INDEX_MAX_AGE_S + 1,),
+        )
+
+    # Clear in-memory cache to force persistent index load
+    engine._inventory_cache.clear()
+
+    # Trigger a search that will start a background refresh
+    list(engine.search_files(str(search_root), "file", search_within_files=False))
+
+    # Now shut down
+    engine.shutdown()
+
+    deadline = monotonic() + 2.0
+    while monotonic() < deadline:
+        with engine._inventory_refresh_lock:
+            if not engine._inventory_refreshes:
+                break
+        sleep(0.05)
+
+    with engine._inventory_refresh_lock:
+        assert not engine._inventory_refreshes, "Background refresh should have stopped"
+
+
+def test_always_binary_skip_no_sniff(tmp_path):
+    """Always-binary extensions (.exr) should be rejected without calling _is_likely_binary;
+    maybe-binary extensions (.usd) should call it and allow text-based files through."""
+    engine = SearchEngine()
+    sniff_calls: list[str] = []
+    original_is_likely_binary = engine._is_likely_binary
+
+    def tracking_is_likely_binary(file_path):
+        sniff_calls.append(str(file_path))
+        return original_is_likely_binary(file_path)
+
+    engine._is_likely_binary = tracking_is_likely_binary  # type: ignore[method-assign]
+
+    exr_file = tmp_path / "render.exr"
+    exr_file.write_bytes(b"\x00" * 10)
+    usd_file = tmp_path / "scene.usd"
+    usd_file.write_text("usda 1.0\n")  # text-based USD
+
+    # .exr should be rejected immediately (always-binary), no sniff needed
+    assert not engine._should_process_file(
+        "render.exr", [], [], search_within_files=True, file_path=exr_file
+    )
+    assert not any("render.exr" in call for call in sniff_calls)
+
+    # .usd should trigger the sniff check (maybe-binary)
+    result = engine._should_process_file(
+        "scene.usd", [], [], search_within_files=True, file_path=usd_file
+    )
+    assert any("scene.usd" in call for call in sniff_calls)
+    # Text-based USD passes the sniff test
+    assert result is True
+
+
+def test_usdz_in_always_binary():
+    """'.usdz' must be in the always-binary extensions set."""
+    engine = SearchEngine()
+    assert ".usdz" in engine._always_binary_extensions

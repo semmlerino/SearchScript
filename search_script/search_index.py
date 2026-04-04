@@ -142,7 +142,7 @@ class SearchIndexStore:
 
         serialized_key = self._serialize_cache_key(cache_key)
         try:
-            with self._lock, sqlite3.connect(self.db_path) as conn:
+            with self._lock, sqlite3.connect(self.db_path, isolation_level="IMMEDIATE") as conn:
                 conn.execute(
                     """
                     INSERT INTO inventories (

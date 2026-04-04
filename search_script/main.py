@@ -12,6 +12,7 @@ def main():
     """Main application entry point."""
     app = QApplication(sys.argv)
     controller = SearchController()
+    app.aboutToQuit.connect(controller.search_engine.shutdown)
     controller.ui.show()
     sys.exit(app.exec())
 

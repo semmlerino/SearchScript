@@ -127,8 +127,9 @@ class SearchEngine:
         self._inventory_cache_lock = threading.Lock()
         self._inventory_refreshes: set[InventoryCacheKey] = set()
         self._inventory_refresh_lock = threading.Lock()
+        self._shutdown_event = threading.Event()
         self._index_store = SearchIndexStore(self.logger, db_path=index_db_path)
-        self._binary_extensions = {
+        self._always_binary_extensions = {
             ".exe",
             ".dll",
             ".so",
@@ -176,8 +177,8 @@ class SearchEngine:
             ".braw",
             # VFX scene and cache formats
             ".abc",
-            ".usd",
             ".usdc",
+            ".usdz",
             ".bgeo",
             ".vdb",
             ".mb",
@@ -192,12 +193,17 @@ class SearchEngine:
             # Nuke compiled format
             ".nknc",
         }
+        self._maybe_binary_extensions = {".usd"}
         try:
             import chardet  # pyright: ignore[reportMissingImports]
 
             self._chardet: types.ModuleType | None = chardet
         except ImportError:
             self._chardet = None
+
+    def shutdown(self) -> None:
+        """Signal background threads to stop."""
+        self._shutdown_event.set()
 
     def search_files(
         self,
@@ -446,7 +452,6 @@ class SearchEngine:
                                     return
                     except FileAccessError as e:
                         self.logger.warning(f"Skipping file due to access error: {e}")
-                        continue
 
                     files_processed += 1
                     self._update_cached_inventory_progress(
@@ -643,7 +648,7 @@ class SearchEngine:
                 max_depth=max_depth,
                 follow_symlinks=follow_symlinks,
                 progress_callback=None,
-                cancel_event=None,
+                cancel_event=self._shutdown_event,
                 include_ignored=include_ignored,
             )
             if snapshot is None:
@@ -773,12 +778,13 @@ class SearchEngine:
         file_path: Path | None = None,
     ) -> bool:
         """Check if file should be processed based on type filters."""
-        # Skip known binary file types for content search only; allow through if
-        # the file doesn't actually contain null bytes (e.g. text-based USD/USDA).
         file_ext = Path(file_lower).suffix.lower()
+        if search_within_files and file_ext in self._always_binary_extensions:
+            return False
+        # Maybe-binary formats (e.g. .usd) can be text or binary — sniff before skipping.
         if (
             search_within_files
-            and file_ext in self._binary_extensions
+            and file_ext in self._maybe_binary_extensions
             and (file_path is None or self._is_likely_binary(file_path))
         ):
             return False
@@ -1139,6 +1145,7 @@ class SearchEngine:
         stat_cache: dict[str, os.stat_result] = {}
         matches = 0
         emitted_results = 0
+        pending_context: list[str] = []
 
         try:
             while True:
@@ -1162,7 +1169,16 @@ class SearchEngine:
                     self.logger.debug("Skipping non-JSON ripgrep output line: %r", raw_line)
                     continue
 
-                if payload.get("type") != "match":
+                msg_type = payload.get("type")
+                if msg_type == "context":
+                    ctx_data = payload.get("data", {})
+                    ctx_text = self._decode_ripgrep_text(ctx_data.get("lines", {})).strip()
+                    if ctx_text and len(ctx_text) > LINE_CONTENT_MAX_CHARS:
+                        ctx_text = ctx_text[:LINE_CONTENT_MAX_CHARS] + "..."
+                    pending_context.append(ctx_text)
+                    continue
+                if msg_type != "match":
+                    pending_context.clear()
                     continue
 
                 data = payload["data"]
@@ -1199,6 +1215,46 @@ class SearchEngine:
                         rg_match_start = max(0, sm_start - strip_offset)
                         rg_match_length = sm_end - sm_start
 
+                # Collect context lines from ripgrep output
+                rg_ctx_before: list[str] | None = None
+                rg_ctx_after: list[str] | None = None
+                if context_lines > 0:
+                    rg_ctx_before = list(pending_context) if pending_context else None
+                    pending_context.clear()
+                    # Lookahead: read context entries after the match
+                    after_lines: list[str] = []
+                    putback: list[str] = []
+                    while len(after_lines) < context_lines:
+                        try:
+                            peek_line = stdout_queue.get(timeout=0.1)
+                        except Empty:
+                            if process.poll() is not None:
+                                break
+                            continue
+                        if peek_line is None:
+                            stdout_queue.put(None)
+                            break
+                        try:
+                            peek_payload = json.loads(peek_line)
+                        except json.JSONDecodeError:
+                            continue
+                        if peek_payload.get("type") == "context":
+                            peek_data = peek_payload.get("data", {})
+                            peek_text = self._decode_ripgrep_text(
+                                peek_data.get("lines", {})
+                            ).strip()
+                            if peek_text and len(peek_text) > LINE_CONTENT_MAX_CHARS:
+                                peek_text = peek_text[:LINE_CONTENT_MAX_CHARS] + "..."
+                            after_lines.append(peek_text)
+                        else:
+                            putback.append(peek_line)
+                            break
+                    for pb in putback:
+                        stdout_queue.put(pb)
+                    rg_ctx_after = after_lines if after_lines else None
+                else:
+                    pending_context.clear()
+
                 matches += 1
                 if progress_callback and matches % RIPGREP_PROGRESS_MILESTONE == 0:
                     progress_callback(f"ripgrep matched {matches} lines in {directory}")
@@ -1209,6 +1265,8 @@ class SearchEngine:
                     stripped_line,
                     file_size=stat_result.st_size,
                     mod_time=stat_result.st_mtime,
+                    context_before=rg_ctx_before,
+                    context_after=rg_ctx_after,
                     match_start=rg_match_start,
                     match_length=rg_match_length,
                 )
@@ -1377,27 +1435,33 @@ class SearchEngine:
                                 # Adjust match_start for stripped leading whitespace
                                 strip_offset = len(line_text) - len(line_text.lstrip())
                                 match_start = max(0, raw_match_start - strip_offset)
-                                # Peek at next line for next_line / context_after
-                                next_line: str | None = None
+                                # Scan forward for next_line and context_after
+                                after_lines: list[str] = []
+                                scan_count = max(1, context_lines)
+                                scan_pos = end + 1
                                 if eol != -1:
-                                    next_eol = mm.find(b"\n", end + 1)
-                                    next_end = next_eol if next_eol != -1 else len(mm)
-                                    raw_next = (
-                                        mm[end + 1 : next_end]
-                                        .decode(encoding, errors="replace")
-                                        .rstrip("\r")
-                                        .strip()
-                                    )
-                                    if raw_next:
-                                        if len(raw_next) > LINE_CONTENT_MAX_CHARS:
-                                            raw_next = raw_next[:LINE_CONTENT_MAX_CHARS] + "..."
-                                        next_line = raw_next
+                                    for _ in range(scan_count):
+                                        if scan_pos >= len(mm):
+                                            break
+                                        next_eol = mm.find(b"\n", scan_pos)
+                                        next_end = next_eol if next_eol != -1 else len(mm)
+                                        raw_next = (
+                                            mm[scan_pos:next_end]
+                                            .decode(encoding, errors="replace")
+                                            .rstrip("\r")
+                                            .strip()
+                                        )
+                                        if raw_next:
+                                            if len(raw_next) > LINE_CONTENT_MAX_CHARS:
+                                                raw_next = raw_next[:LINE_CONTENT_MAX_CHARS] + "..."
+                                            after_lines.append(raw_next)
+                                        scan_pos = next_end + 1
+                                next_line = after_lines[0] if after_lines else None
                                 ctx_before: list[str] | None = None
                                 ctx_after: list[str] | None = None
                                 if context_lines > 0:
                                     ctx_before = list(prev_lines)
-                                    # context_after: just use next_line as a single-element list
-                                    ctx_after = [next_line] if next_line else None
+                                    ctx_after = after_lines if after_lines else None
                                 yield SearchResult(
                                     str(file_path),
                                     line_no,
