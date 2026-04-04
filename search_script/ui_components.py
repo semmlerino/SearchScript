@@ -148,6 +148,8 @@ class SearchUI(QMainWindow):
 
         self._main_layout.addLayout(row)
 
+        self.search_entry.returnPressed.connect(self._on_search_clicked)
+
     def _create_options_section(self):
         """Create checkbutton and file type filter rows."""
         self.within_checkbox = QCheckBox("Search within file contents")
@@ -159,6 +161,7 @@ class SearchUI(QMainWindow):
         self._main_layout.addLayout(include_row)
 
         self.include_entry = QLineEdit()
+        self.include_entry.setPlaceholderText(".txt, .py, .js")
         self._main_layout.addWidget(self.include_entry)
 
         exclude_row = QHBoxLayout()
@@ -167,6 +170,7 @@ class SearchUI(QMainWindow):
         self._main_layout.addLayout(exclude_row)
 
         self.exclude_entry = QLineEdit()
+        self.exclude_entry.setPlaceholderText(".log, .tmp")
         self._main_layout.addWidget(self.exclude_entry)
 
     def _create_advanced_filters_row(self):
@@ -175,18 +179,21 @@ class SearchUI(QMainWindow):
 
         row.addWidget(QLabel("Max depth:"))
         self.depth_entry = QLineEdit()
+        self.depth_entry.setPlaceholderText("unlimited")
         self.depth_entry.setFixedWidth(60)
         row.addWidget(self.depth_entry)
         row.addSpacing(15)
 
         row.addWidget(QLabel("Min size (bytes):"))
         self.min_size_entry = QLineEdit()
+        self.min_size_entry.setPlaceholderText("e.g. 1048576")
         self.min_size_entry.setFixedWidth(100)
         row.addWidget(self.min_size_entry)
         row.addSpacing(15)
 
         row.addWidget(QLabel("Max size (bytes):"))
         self.max_size_entry = QLineEdit()
+        self.max_size_entry.setPlaceholderText("no limit")
         self.max_size_entry.setFixedWidth(100)
         row.addWidget(self.max_size_entry)
         row.addSpacing(15)
@@ -203,7 +210,7 @@ class SearchUI(QMainWindow):
         self.follow_symlinks_checkbox = QCheckBox("Follow symlinks")
         row.addWidget(self.follow_symlinks_checkbox)
         self.include_ignored_checkbox = QCheckBox("Include ignored files")
-        self.include_ignored_checkbox.setChecked(True)
+        self.include_ignored_checkbox.setChecked(False)
         row.addWidget(self.include_ignored_checkbox)
         row.addSpacing(15)
 
@@ -262,6 +269,7 @@ class SearchUI(QMainWindow):
 
         self.search_button = QPushButton("Search")
         self.search_button.setFixedWidth(120)
+        self.search_button.setDefault(True)
         self.search_button.setStyleSheet("background-color: blue; color: white;")
         self.search_button.clicked.connect(self._on_search_clicked)
         row.addWidget(self.search_button)
@@ -651,10 +659,6 @@ class SearchUI(QMainWindow):
         """Update status label text."""
         self.status_label.setText(message)
 
-    def show_no_results_message(self):
-        """Show no results found message."""
-        QMessageBox.information(self, "No Matches", "No matches found.")
-
     def show_error_message(self, title: str, message: str):
         """Show error message."""
         QMessageBox.critical(self, title, message)
@@ -728,7 +732,7 @@ class SearchUI(QMainWindow):
             QMessageBox.critical(self, "Export Failed", f"Could not write to {file_path}:\n{e}")
             return
 
-        QMessageBox.information(self, "Export", f"Exported {len(rows)} results to {file_path}")
+        self.update_status(f"Exported {len(rows)} results to {file_path}")
 
     def get_search_term(self) -> str:
         return self.search_entry.text()

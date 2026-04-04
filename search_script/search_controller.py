@@ -254,7 +254,7 @@ class SearchController:
         if displayed > 0:
             self.logger.info(f"Search completed with {displayed} matches")
         else:
-            self.ui.show_no_results_message()
+            self.ui.update_status("Search completed. No matches found.")
             self.logger.info("Search completed with no matches")
 
     def _handle_search_error(self, error_msg: str):
