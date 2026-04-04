@@ -1,5 +1,6 @@
 """InventoryManager: caching, TTL, spot-check, background refresh, and filesystem walk."""
 
+import heapq
 import logging
 import os
 import threading
@@ -172,8 +173,7 @@ class InventoryManager:
 
         Returns True if all sampled files pass (snapshot likely still valid).
         """
-        sorted_files = sorted(snapshot.files, key=lambda e: e.mod_time, reverse=True)
-        sample = sorted_files[:SPOT_CHECK_SAMPLE_SIZE]
+        sample = heapq.nlargest(SPOT_CHECK_SAMPLE_SIZE, snapshot.files, key=lambda e: e.mod_time)
         for entry in sample:
             try:
                 st = os.stat(entry.file_path)

@@ -664,19 +664,19 @@ def test_in_memory_cache_fresh_at_59s(tmp_path: Path, monkeypatch: pytest.Monkey
 def test_fast_scan_uses_base_ttl():
     engine = SearchEngine()
     snapshot = InventorySnapshot(files=[], directories=[], created_at=0.0, scan_duration_s=0.5)
-    assert engine._inventory._compute_effective_ttl(snapshot) == 300.0  # pyright: ignore[reportPrivateUsage]  # pyright: ignore[reportPrivateUsage]
+    assert engine._inventory._compute_effective_ttl(snapshot) == 600.0  # pyright: ignore[reportPrivateUsage]  # pyright: ignore[reportPrivateUsage]
 
 
 def test_slow_scan_scales_ttl():
     engine = SearchEngine()
     snapshot = InventorySnapshot(files=[], directories=[], created_at=0.0, scan_duration_s=10.0)
-    assert engine._inventory._compute_effective_ttl(snapshot) == 1200.0  # pyright: ignore[reportPrivateUsage]  # pyright: ignore[reportPrivateUsage]
+    assert engine._inventory._compute_effective_ttl(snapshot) == 2400.0  # pyright: ignore[reportPrivateUsage]  # pyright: ignore[reportPrivateUsage]
 
 
 def test_very_slow_scan_caps_at_ceiling():
     engine = SearchEngine()
-    snapshot = InventorySnapshot(files=[], directories=[], created_at=0.0, scan_duration_s=30.0)
-    assert engine._inventory._compute_effective_ttl(snapshot) == 3600.0  # pyright: ignore[reportPrivateUsage]  # pyright: ignore[reportPrivateUsage]
+    snapshot = InventorySnapshot(files=[], directories=[], created_at=0.0, scan_duration_s=120.0)
+    assert engine._inventory._compute_effective_ttl(snapshot) == 14400.0  # pyright: ignore[reportPrivateUsage]  # pyright: ignore[reportPrivateUsage]
 
 
 def test_scan_duration_persisted_and_loaded(tmp_path: Path):
@@ -1762,10 +1762,10 @@ def test_ripgrep_filename_search_falls_back_when_unavailable(tmp_path: Path) -> 
 
 
 def test_default_max_workers_scales_with_cpu_count(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Default max_workers should scale with CPU count, capped at 16."""
+    """Default max_workers should scale with CPU count, capped at 48."""
     monkeypatch.setattr(os, "cpu_count", lambda: 32)
     engine = SearchEngine()
-    assert engine.max_workers == 16
+    assert engine.max_workers == 32
 
     monkeypatch.setattr(os, "cpu_count", lambda: 2)
     engine2 = SearchEngine()

@@ -46,7 +46,7 @@ class InventoryLoadResult:
 class SearchIndexStore:
     """SQLite-backed persistent inventory snapshots for repeated search roots."""
 
-    MAX_STORED_INVENTORIES = 12
+    MAX_STORED_INVENTORIES = 30
 
     def __init__(
         self,
