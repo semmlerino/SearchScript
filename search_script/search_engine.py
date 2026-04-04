@@ -587,13 +587,6 @@ class SearchEngine:
         file_ext = Path(file_lower).suffix.lower()
         if search_within_files and file_ext in self._always_binary_extensions:
             return False
-        # Maybe-binary formats (e.g. .usd) can be text or binary — sniff before skipping.
-        if (
-            search_within_files
-            and file_ext in self._maybe_binary_extensions
-            and (file_path is None or self._is_likely_binary(file_path))
-        ):
-            return False
 
         if include_types and not any(file_lower.endswith(ext) for ext in include_types):
             return False
@@ -758,7 +751,10 @@ class SearchEngine:
         try:
             with open(file_path, "rb") as f:
                 raw = f.read()
-            encoding = self._detect_bom_from_bytes(raw) or "utf-8"
+            encoding = self._detect_bom_from_bytes(raw)
+            if encoding is None and b"\x00" in raw[:8192]:
+                return
+            encoding = encoding or "utf-8"
             lines = raw.decode(encoding, errors="replace").splitlines(keepends=True)
             yielded = 0
             for i, line in enumerate(lines):
@@ -813,7 +809,10 @@ class SearchEngine:
             with open(file_path, "rb") as f:
                 try:
                     with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                        encoding = self._detect_bom_from_bytes(bytes(mm[:4])) or "utf-8"
+                        encoding = self._detect_bom_from_bytes(bytes(mm[:4]))
+                        if encoding is None and b"\x00" in bytes(mm[: min(8192, len(mm))]):
+                            return
+                        encoding = encoding or "utf-8"
                         line_no = 0
                         pos = 0
                         yielded = 0

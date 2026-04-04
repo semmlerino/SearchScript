@@ -1581,37 +1581,45 @@ def test_shutdown_stops_background_refresh(tmp_path: Path):
         assert not engine._inventory._refreshes, "Background refresh should have stopped"  # pyright: ignore[reportPrivateUsage]
 
 
-def test_always_binary_skip_no_sniff(tmp_path: Path):
-    """Always-binary extensions (.exr) should be rejected without calling _is_likely_binary;
-    maybe-binary extensions (.usd) should call it and allow text-based files through."""
+def test_binary_detection_in_content_read(tmp_path: Path):
+    """Always-binary extensions (.exr) are rejected by _should_process_file without opening;
+    maybe-binary extensions (.usd) pass the filter and binary detection happens during read."""
     engine = SearchEngine()
-    sniff_calls: list[str] = []
-    original_is_likely_binary = engine._is_likely_binary  # pyright: ignore[reportPrivateUsage]
-
-    def tracking_is_likely_binary(file_path: Path) -> bool:
-        sniff_calls.append(str(file_path))
-        return original_is_likely_binary(file_path)
-
-    engine._is_likely_binary = tracking_is_likely_binary  # type: ignore[method-assign]
 
     exr_file = tmp_path / "render.exr"
     exr_file.write_bytes(b"\x00" * 10)
-    usd_file = tmp_path / "scene.usd"
-    usd_file.write_text("usda 1.0\n")  # text-based USD
+    usd_text = tmp_path / "scene.usd"
+    usd_text.write_text("usda 1.0\nfindme\n")
+    usd_binary = tmp_path / "binary.usd"
+    usd_binary.write_bytes(b"\x00" * 100 + b"findme")
 
-    # .exr should be rejected immediately (always-binary), no sniff needed
+    # .exr still rejected by _should_process_file (always-binary)
     assert not engine._should_process_file(  # pyright: ignore[reportPrivateUsage]
         "render.exr", [], [], search_within_files=True, file_path=exr_file
     )
-    assert not any("render.exr" in call for call in sniff_calls)
 
-    # .usd should trigger the sniff check (maybe-binary)
-    result = engine._should_process_file(  # pyright: ignore[reportPrivateUsage]
-        "scene.usd", [], [], search_within_files=True, file_path=usd_file
+    # .usd passes the filter now (no upfront sniff)
+    assert engine._should_process_file(  # pyright: ignore[reportPrivateUsage]
+        "scene.usd", [], [], search_within_files=True, file_path=usd_text
     )
-    assert any("scene.usd" in call for call in sniff_calls)
-    # Text-based USD passes the sniff test
-    assert result is True
+
+    # Text-based .usd yields results during content search
+    results = list(engine.search_files(
+        str(tmp_path), "findme", search_within_files=True,
+        search_backend=SearchBackend.PYTHON, include_types=[".usd"],
+    ))
+    assert len(results) == 1
+    assert "scene.usd" in results[0].file_path
+
+    # Binary .usd with null bytes yields no results (detected during read)
+    results_bin = list(engine.search_files(
+        str(tmp_path), "findme", search_within_files=True,
+        search_backend=SearchBackend.PYTHON, include_types=[".usd"],
+    ))
+    # scene.usd still matches, binary.usd does not
+    paths = [r.file_path for r in results_bin]
+    assert any("scene.usd" in p for p in paths)
+    assert not any("binary.usd" in p for p in paths)
 
 
 def test_usdz_in_always_binary():
