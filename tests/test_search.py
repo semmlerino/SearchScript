@@ -18,8 +18,9 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from search_script.config import ValidationError
 from search_script.file_utils import FileOperations
+from search_script.models import SearchBackend, SearchMode, SearchResult
 from search_script.search_controller import SearchController
-from search_script.search_engine import SearchBackend, SearchEngine, SearchMode, SearchResult
+from search_script.search_engine import SearchEngine
 from search_script.search_index import InventoryCacheKey, InventorySnapshot, SearchIndexStore
 from search_script.ui_components import SearchUI
 
@@ -502,15 +503,18 @@ def test_symlink_cycle_detection(tmp_path: Path):
 
 
 def test_controller_drain_remaining_results(qapp: QApplication):
+    from search_script.models import DoneMsg, ResultBatchMsg
+
     controller = SearchController()
     controller.result_queue = queue.Queue()
     result = SearchResult("/tmp/a.txt", 3, "hello", None, mod_time=1.0, file_size=12)
-    controller.result_queue.put(("result", result))
-    controller.result_queue.put(("done", 1))
+    controller.result_queue.put(ResultBatchMsg([result]))
+    controller.result_queue.put(DoneMsg(1))
 
     sentinel = controller._drain_remaining_results()  # pyright: ignore[reportPrivateUsage]
 
-    assert sentinel == ("done", 1)
+    assert isinstance(sentinel, DoneMsg)
+    assert sentinel.count == 1
     # Content results are now grouped: 1 parent file item with 1 child match
     assert controller.ui.results_tree.topLevelItemCount() == 1
     parent = controller.ui.results_tree.topLevelItem(0)
@@ -525,6 +529,8 @@ def test_controller_drain_remaining_results(qapp: QApplication):
 
 
 def test_controller_search_worker_batches_results(qapp: QApplication):
+    from search_script.models import DoneMsg, ResultBatchMsg, SearchParams
+
     controller = SearchController()
 
     def fake_search_files(**kwargs: Any) -> Any:
@@ -532,36 +538,30 @@ def test_controller_search_worker_batches_results(qapp: QApplication):
         yield SearchResult("/tmp/b.txt", 2, "beta", None, mod_time=2.0, file_size=2)
 
     controller.search_engine.search_files = fake_search_files  # type: ignore[method-assign]
+    params = SearchParams(
+        directory=".",
+        search_term="x",
+        include_types=[],
+        exclude_types=[],
+        search_within_files=True,
+    )
     controller._search_worker(  # pyright: ignore[reportPrivateUsage]
-        {
-            "directory": ".",
-            "search_term": "x",
-            "include_types": [],
-            "exclude_types": [],
-            "search_within_files": True,
-            "search_mode": "substring",
-            "search_backend": "python",
-            "max_depth": None,
-            "min_size": None,
-            "max_size": None,
-            "max_results": None,
-            "modified_after": None,
-            "modified_before": None,
-            "match_folders": False,
-            "follow_symlinks": False,
-        },
+        params,
         controller.cancel_event,
     )
 
-    msg_type, batch = controller.result_queue.get_nowait()
-    assert msg_type == "results_batch"
-    assert isinstance(batch, list)
-    assert len(batch) == 2  # pyright: ignore[reportUnknownArgumentType]
-    assert controller.result_queue.get_nowait() == ("done", 2)
+    msg = controller.result_queue.get_nowait()
+    assert isinstance(msg, ResultBatchMsg)
+    assert len(msg.results) == 2
+    done = controller.result_queue.get_nowait()
+    assert isinstance(done, DoneMsg)
+    assert done.count == 2
     close_widget(controller.ui)
 
 
 def test_controller_search_worker_forwards_backend_and_dates(qapp: QApplication):
+    from search_script.models import SearchParams
+
     controller = SearchController()
     captured: dict[str, object] = {}
 
@@ -574,24 +574,19 @@ def test_controller_search_worker_forwards_backend_and_dates(qapp: QApplication)
     modified_before = datetime(2025, 12, 31)
     max_results = 250
 
+    params = SearchParams(
+        directory=".",
+        search_term="x",
+        include_types=[],
+        exclude_types=[],
+        search_within_files=True,
+        search_backend=SearchBackend.RIPGREP,
+        max_results=max_results,
+        modified_after=modified_after,
+        modified_before=modified_before,
+    )
     controller._search_worker(  # pyright: ignore[reportPrivateUsage]
-        {
-            "directory": ".",
-            "search_term": "x",
-            "include_types": [],
-            "exclude_types": [],
-            "search_within_files": True,
-            "search_mode": "substring",
-            "search_backend": "ripgrep",
-            "max_depth": None,
-            "min_size": None,
-            "max_size": None,
-            "max_results": max_results,
-            "modified_after": modified_after,
-            "modified_before": modified_before,
-            "match_folders": False,
-            "follow_symlinks": False,
-        },
+        params,
         controller.cancel_event,
     )
 
@@ -874,22 +869,24 @@ def test_spot_check_triggers_rescan_on_delete(tmp_path: Path):
 
 def test_refresh_clears_cache_and_retriggers(qapp: QApplication):
     """Refresh clears cache and re-runs the search."""
+    from search_script.models import SearchParams
+
     controller = SearchController()
-    search_called: list[dict[str, Any]] = []
+    search_called: list[SearchParams] = []
 
-    def capture_start(params: dict[str, Any]) -> None:
-        search_called.append(dict(params))
+    def capture_start(params: SearchParams) -> None:
+        search_called.append(params)
 
-    controller._start_search = capture_start  # type: ignore[method-assign]
+    controller._start_search_from_params = capture_start  # type: ignore[method-assign]
 
     # Simulate having run a search by setting _last_search_params
-    controller._last_search_params = {  # pyright: ignore[reportPrivateUsage]
-        "directory": "/tmp/test",
-        "search_term": "hello",
-        "max_depth": None,
-        "follow_symlinks": False,
-        "include_ignored": True,
-    }
+    controller._last_search_params = SearchParams(  # pyright: ignore[reportPrivateUsage]
+        directory="/tmp/test",
+        search_term="hello",
+        max_depth=None,
+        follow_symlinks=False,
+        include_ignored=True,
+    )
 
     cache_cleared = False
 
@@ -903,7 +900,7 @@ def test_refresh_clears_cache_and_retriggers(qapp: QApplication):
 
     assert cache_cleared
     assert len(search_called) == 1
-    assert search_called[0]["directory"] == "/tmp/test"
+    assert search_called[0].directory == "/tmp/test"
     close_widget(controller.ui)
 
 

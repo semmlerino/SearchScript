@@ -13,19 +13,15 @@ import types
 from base64 import b64decode
 from collections import deque
 from collections.abc import Callable, Generator
-from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
 from queue import Empty, Queue
 from time import time
 
 try:
     from rapidfuzz import fuzz
-
-    _rapidfuzz_available: bool = True
 except ImportError:
-    _rapidfuzz_available = False
+    fuzz = None  # type: ignore[assignment]  # pyright: ignore[reportConstantRedefinition]
 
 import pathspec
 
@@ -48,74 +44,13 @@ from .constants import (
     RIPGREP_PROGRESS_MILESTONE,
     SPOT_CHECK_SAMPLE_SIZE,
 )
+from .models import RAPIDFUZZ_AVAILABLE, MatchPlan, SearchBackend, SearchMode, SearchResult
 from .search_index import (
     InventoryCacheKey,
     InventoryEntry,
     InventorySnapshot,
     SearchIndexStore,
 )
-
-RAPIDFUZZ_AVAILABLE: bool = _rapidfuzz_available
-
-
-@dataclass
-class SearchResult:
-    file_path: str
-    line_number: int | None = None
-    line_content: str | None = None
-    next_line: str | None = None
-    mod_time: float | None = None
-    file_size: int | None = None
-    match_score: float | None = None
-    context_before: list[str] | None = None
-    context_after: list[str] | None = None
-    match_start: int | None = None
-    match_length: int | None = None
-
-    @property
-    def display_text(self) -> str:
-        if self.line_number and self.line_content:
-            return f"{self.line_number}: {self.line_content}"
-        return ""
-
-    @property
-    def formatted_mod_time(self) -> str:
-        if self.mod_time is not None:
-            return datetime.fromtimestamp(self.mod_time).strftime("%Y-%m-%d %H:%M:%S")
-        return "N/A"
-
-    @property
-    def formatted_size(self) -> str:
-        if self.file_size is not None:
-            size = float(self.file_size)
-            for unit in ["B", "KB", "MB", "GB", "TB"]:
-                if size < 1024.0:
-                    return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} {unit}"
-                size /= 1024.0
-            return f"{size:.1f} PB"
-        return "N/A"
-
-
-class SearchMode(Enum):
-    SUBSTRING = "substring"
-    GLOB = "glob"
-    REGEX = "regex"
-    FUZZY = "fuzzy"
-
-
-class SearchBackend(Enum):
-    AUTO = "auto"
-    PYTHON = "python"
-    RIPGREP = "ripgrep"
-
-
-@dataclass(frozen=True)
-class MatchPlan:
-    mode: SearchMode
-    raw_term: str
-    normalized_term: str
-    regex: re.Pattern[str] | None = None
-    case_sensitive: bool = False
 
 
 class SearchEngine:
@@ -929,8 +864,9 @@ class SearchEngine:
         self, text: str, normalized_term: str, *, allow_partial_fuzzy: bool
     ) -> float | None:
         """Compute a fuzzy score with tighter thresholds for filename matching."""
-        if not _rapidfuzz_available or not normalized_term:
+        if not RAPIDFUZZ_AVAILABLE or not normalized_term:
             return None
+        assert fuzz is not None
 
         normalized_text = text.lower()
         if normalized_text == normalized_term:

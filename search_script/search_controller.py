@@ -14,7 +14,20 @@ from .constants import (
     RESULT_POLL_INITIAL_DELAY_MS,
 )
 from .file_utils import FileOperations, LoggingConfig
-from .search_engine import SearchBackend, SearchEngine, SearchMode, SearchResult
+from .models import (
+    CancelledMsg,
+    DoneMsg,
+    ErrorMsg,
+    LimitReachedMsg,
+    ResultBatchMsg,
+    SearchBackend,
+    SearchMessage,
+    SearchMode,
+    SearchParams,
+    SearchResult,
+    StatusMsg,
+)
+from .search_engine import SearchEngine
 from .ui_components import SearchUI
 
 
@@ -32,10 +45,10 @@ class SearchController:
         # Threading
         self.cancel_event = threading.Event()
         self.search_thread: threading.Thread | None = None
-        self.result_queue: queue.Queue[tuple[str, object]] = queue.Queue()
+        self.result_queue: queue.Queue[SearchMessage] = queue.Queue()
         self.search_was_truncated = False
         self.search_result_limit: int | None = None
-        self._last_search_params: dict[str, Any] | None = None
+        self._last_search_params: SearchParams | None = None
         self._search_generation: int = 0
 
         # Setup callbacks
@@ -83,54 +96,63 @@ class SearchController:
         )
         return modified_after, modified_before
 
-    def _coerce_limit_value(self, data: object) -> int | None:
-        """Convert a queue payload into an integer result limit when possible."""
-        if isinstance(data, int):
-            return data
-        if isinstance(data, str) and data.isdigit():
-            return int(data)
-        return None
-
     def _start_search(self, search_params: dict[str, Any]):
         """Start the search operation."""
         self.logger.info(f"Starting search with parameters: {search_params}")
-
         modified_after, modified_before = self._build_modified_date_filters()
-        search_params["modified_after"] = modified_after
-        search_params["modified_before"] = modified_before
-        self._last_search_params = dict(search_params)
+        params = SearchParams(
+            directory=search_params["directory"],
+            search_term=search_params["search_term"],
+            include_types=search_params["include_types"],
+            exclude_types=search_params["exclude_types"],
+            search_within_files=search_params["search_within_files"],
+            search_mode=SearchMode(search_params.get("search_mode", "substring")),
+            search_backend=SearchBackend(search_params.get("search_backend", "auto")),
+            max_depth=search_params.get("max_depth"),
+            min_size=search_params.get("min_size"),
+            max_size=search_params.get("max_size"),
+            max_results=search_params.get("max_results"),
+            modified_after=modified_after,
+            modified_before=modified_before,
+            match_folders=search_params.get("match_folders", False),
+            follow_symlinks=search_params.get("follow_symlinks", False),
+            include_ignored=search_params.get("include_ignored", True),
+            context_lines=search_params.get("context_lines", 0),
+            case_sensitive=search_params.get("case_sensitive", False),
+            exclude_shots=search_params.get("exclude_shots", True),
+        )
+        self._start_search_from_params(params)
 
-        # Auto-cancel running search
+    def _start_search_from_params(self, params: SearchParams) -> None:
+        """Start search from already-constructed SearchParams."""
+        self._last_search_params = params
+
         self._search_generation += 1
         generation = self._search_generation
         if self.search_thread is not None and self.search_thread.is_alive():
             self.cancel_event.set()
 
-        # Reset UI state
         self.ui.set_search_state(True)
         self.ui.clear_results()
         self.ui.update_status("Starting search...")
 
-        # Setup threading — fresh cancel event for this generation
         self.cancel_event = threading.Event()
         cancel_event = self.cancel_event
         self.result_queue = queue.Queue()
         self.search_was_truncated = False
-        self.search_result_limit = search_params.get("max_results")
+        self.search_result_limit = params.max_results
 
-        # Start search thread
         self.search_thread = threading.Thread(
-            target=self._search_worker, args=(search_params, cancel_event), daemon=True
+            target=self._search_worker, args=(params, cancel_event), daemon=True
         )
         self.search_thread.start()
 
-        # Start monitoring results
         QTimer.singleShot(
             RESULT_POLL_INITIAL_DELAY_MS,
             lambda g=generation: self._process_results(g),  # pyright: ignore[reportUnknownLambdaType,reportUnknownArgumentType]
         )
 
-    def _search_worker(self, search_params: dict[str, Any], cancel_event: threading.Event):
+    def _search_worker(self, params: SearchParams, cancel_event: threading.Event):
         """Worker thread for search operations."""
         try:
             count = 0
@@ -138,42 +160,37 @@ class SearchController:
             first_flushed = False
 
             def progress_callback(message: str):
-                self.result_queue.put(("status", message))
+                self.result_queue.put(StatusMsg(message))
 
             def on_limit_reached(limit: int) -> None:
-                self.result_queue.put(("limit_reached", limit))
+                self.result_queue.put(LimitReachedMsg(limit))
 
             def flush_batch() -> None:
                 nonlocal batch
                 if batch:
-                    self.result_queue.put(("results_batch", batch))
+                    self.result_queue.put(ResultBatchMsg(batch))
                     batch = []
 
-            mode_str = search_params.get("search_mode", "substring")
-            search_mode = SearchMode(mode_str)
-            backend_str = search_params.get("search_backend", "auto")
-            search_backend = SearchBackend(backend_str)
-
             for result in self.search_engine.search_files(
-                directory=search_params["directory"],
-                search_term=search_params["search_term"],
-                include_types=search_params["include_types"],
-                exclude_types=search_params["exclude_types"],
-                search_within_files=search_params["search_within_files"],
-                search_mode=search_mode,
-                search_backend=search_backend,
-                max_depth=search_params.get("max_depth"),
-                min_size=search_params.get("min_size"),
-                max_size=search_params.get("max_size"),
-                max_results=search_params.get("max_results"),
-                modified_after=search_params.get("modified_after"),
-                modified_before=search_params.get("modified_before"),
-                match_folders=search_params.get("match_folders", False),
-                follow_symlinks=search_params.get("follow_symlinks", False),
-                include_ignored=search_params.get("include_ignored", True),
-                context_lines=search_params.get("context_lines", 0),
-                case_sensitive=search_params.get("case_sensitive", False),
-                exclude_shots=search_params.get("exclude_shots", True),
+                directory=params.directory,
+                search_term=params.search_term,
+                include_types=params.include_types,
+                exclude_types=params.exclude_types,
+                search_within_files=params.search_within_files,
+                search_mode=params.search_mode,
+                search_backend=params.search_backend,
+                max_depth=params.max_depth,
+                min_size=params.min_size,
+                max_size=params.max_size,
+                max_results=params.max_results,
+                modified_after=params.modified_after,
+                modified_before=params.modified_before,
+                match_folders=params.match_folders,
+                follow_symlinks=params.follow_symlinks,
+                include_ignored=params.include_ignored,
+                context_lines=params.context_lines,
+                case_sensitive=params.case_sensitive,
+                exclude_shots=params.exclude_shots,
                 progress_callback=progress_callback,
                 on_limit_reached=on_limit_reached,
                 cancel_event=cancel_event,
@@ -181,7 +198,7 @@ class SearchController:
                 if cancel_event.is_set():
                     flush_batch()
                     msg = f"Search cancelled. Found {count} matches."
-                    self.result_queue.put(("cancelled", msg))
+                    self.result_queue.put(CancelledMsg(msg))
                     return
                 batch.append(result)
                 count += 1
@@ -191,11 +208,11 @@ class SearchController:
                     first_flushed = True
 
             flush_batch()
-            self.result_queue.put(("done", count))
+            self.result_queue.put(DoneMsg(count))
 
         except Exception as e:
             error_msg = f"Search error: {e!s}"
-            self.result_queue.put(("error", error_msg))
+            self.result_queue.put(ErrorMsg(error_msg))
             self.logger.error(error_msg)
 
     def _process_results(self, generation: int):
@@ -207,33 +224,31 @@ class SearchController:
         started_at = monotonic()
         try:
             while monotonic() - started_at < PROCESS_RESULTS_TIME_BUDGET_S:
-                msg_type, data = self.result_queue.get_nowait()
+                msg = self.result_queue.get_nowait()
 
-                if msg_type == "result":
-                    batch.append(data)  # type: ignore[arg-type]
-                elif msg_type == "results_batch":
-                    batch.extend(data)  # type: ignore[arg-type]
-                elif msg_type == "done":
+                if isinstance(msg, ResultBatchMsg):
+                    batch.extend(msg.results)
+                elif isinstance(msg, DoneMsg):
                     if batch:
                         self.ui.add_results_batch(batch)
                     self._drain_remaining_results()
                     self._handle_search_complete()
                     return
-                elif msg_type == "status":
-                    self.ui.update_status(str(data))
-                elif msg_type == "limit_reached":
+                elif isinstance(msg, StatusMsg):
+                    self.ui.update_status(msg.message)
+                elif isinstance(msg, LimitReachedMsg):
                     self.search_was_truncated = True
-                    self.search_result_limit = self._coerce_limit_value(data)
-                elif msg_type == "error":
+                    self.search_result_limit = msg.limit
+                elif isinstance(msg, ErrorMsg):
                     if batch:
                         self.ui.add_results_batch(batch)
-                    self._handle_search_error(str(data))
+                    self._handle_search_error(msg.message)
                     return
-                elif msg_type == "cancelled":
+                else:  # CancelledMsg
                     if batch:
                         self.ui.add_results_batch(batch)
                     self._drain_remaining_results()
-                    self._handle_search_cancelled(str(data))
+                    self._handle_search_cancelled(msg.message)
                     return
         except queue.Empty:
             pass
@@ -247,11 +262,10 @@ class SearchController:
         else:
             sentinel = self._drain_remaining_results()
             if sentinel is not None:
-                msg_type, data = sentinel
-                if msg_type == "error":
-                    self._handle_search_error(str(data))
-                elif msg_type == "cancelled":
-                    self._handle_search_cancelled(str(data))
+                if isinstance(sentinel, ErrorMsg):
+                    self._handle_search_error(sentinel.message)
+                elif isinstance(sentinel, CancelledMsg):
+                    self._handle_search_cancelled(sentinel.message)
                 else:
                     self._handle_search_complete()
             else:
@@ -294,23 +308,21 @@ class SearchController:
         self.ui.update_status(status)
         self.logger.info(message)
 
-    def _drain_remaining_results(self) -> tuple[str, object] | None:
+    def _drain_remaining_results(self) -> SearchMessage | None:
         """Drain remaining results from the queue. Returns first non-result sentinel found."""
         batch: list[SearchResult] = []
         try:
             while True:
-                msg_type, data = self.result_queue.get_nowait()
-                if msg_type == "result":
-                    batch.append(data)  # type: ignore[arg-type]
-                elif msg_type == "results_batch":
-                    batch.extend(data)  # type: ignore[arg-type]
-                elif msg_type == "limit_reached":
+                msg = self.result_queue.get_nowait()
+                if isinstance(msg, ResultBatchMsg):
+                    batch.extend(msg.results)
+                elif isinstance(msg, LimitReachedMsg):
                     self.search_was_truncated = True
-                    self.search_result_limit = self._coerce_limit_value(data)
+                    self.search_result_limit = msg.limit
                 else:
                     if batch:
                         self.ui.add_results_batch(batch)
-                    return (msg_type, data)
+                    return msg
         except queue.Empty:
             if batch:
                 self.ui.add_results_batch(batch)
@@ -323,13 +335,13 @@ class SearchController:
         self._cancel_search()
         params = self._last_search_params
         self.search_engine.clear_inventory_cache(
-            directory=params["directory"],
-            max_depth=params.get("max_depth"),
-            follow_symlinks=params.get("follow_symlinks", False),
-            include_ignored=params.get("include_ignored", True),
-            exclude_shots=params.get("exclude_shots", True),
+            directory=params.directory,
+            max_depth=params.max_depth,
+            follow_symlinks=params.follow_symlinks,
+            include_ignored=params.include_ignored,
+            exclude_shots=params.exclude_shots,
         )
-        self._start_search(dict(params))
+        self._start_search_from_params(params)
 
     def _cancel_search(self):
         """Cancel the current search operation."""

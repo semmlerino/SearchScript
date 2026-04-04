@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .search_engine import RAPIDFUZZ_AVAILABLE, SearchResult
+from .models import RAPIDFUZZ_AVAILABLE, SearchResult
 
 SORT_ROLE = int(Qt.ItemDataRole.UserRole)
 RESULT_ROLE = SORT_ROLE + 1
