@@ -5,6 +5,7 @@ import logging
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 
 from PySide6.QtCore import QPoint, QSettings, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QColor, QKeySequence, QShortcut
@@ -351,22 +352,24 @@ class SearchUI(QMainWindow):
         self._filter_bar.setClearButtonEnabled(True)
         self._main_layout.addWidget(self._filter_bar)
 
-        columns = ["File Path", "Matching Line", "Size", "Last Modified"]
+        columns = ["File Path", "Type", "Matching Line", "Size", "Last Modified"]
         self.results_tree = QTreeWidget()
         self.results_tree.setColumnCount(len(columns))
         self.results_tree.setHeaderLabels(columns)
         self.results_tree.setSortingEnabled(True)
 
         self.results_tree.setColumnWidth(0, 500)
-        self.results_tree.setColumnWidth(1, 400)
-        self.results_tree.setColumnWidth(2, 100)
-        self.results_tree.setColumnWidth(3, 150)
+        self.results_tree.setColumnWidth(1, 80)
+        self.results_tree.setColumnWidth(2, 400)
+        self.results_tree.setColumnWidth(3, 100)
+        self.results_tree.setColumnWidth(4, 150)
 
         header = self.results_tree.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
 
         # Double-click
         self.results_tree.itemDoubleClicked.connect(self._on_result_double_click)
@@ -682,7 +685,7 @@ class SearchUI(QMainWindow):
             if not match and item.childCount() > 0:
                 for j in range(item.childCount()):
                     child = item.child(j)
-                    if child is not None and filter_text in child.text(1).lower():  # pyright: ignore[reportUnnecessaryComparison]
+                    if child is not None and filter_text in child.text(2).lower():  # pyright: ignore[reportUnnecessaryComparison]
                         match = True
                         break
             item.setHidden(not match)
@@ -695,15 +698,17 @@ class SearchUI(QMainWindow):
             # Flat mode for filename search — unchanged behavior
             tree_items = [self._create_result_item(result) for result in items]
             self.results_tree.addTopLevelItems(tree_items)
-            self.results_tree.setColumnHidden(1, True)
+            self.results_tree.setColumnHidden(2, True)
             return
         # Grouped mode for content search
         for result in items:
             parent = self._file_group_items.get(result.file_path)
             if parent is None:
+                suffix = Path(result.file_path).suffix.lower()
                 parent = ResultTreeWidgetItem(
                     [
                         result.file_path,
+                        suffix,
                         "",  # match count placeholder, updated below
                         result.formatted_size,
                         result.formatted_mod_time,
@@ -711,11 +716,12 @@ class SearchUI(QMainWindow):
                 )
                 parent.setData(0, SORT_ROLE, result.file_path.lower())
                 parent.setData(0, RESULT_ROLE, {"file_path": result.file_path, "is_group": True})
+                parent.setData(1, SORT_ROLE, suffix)
                 parent.setData(
-                    2, SORT_ROLE, result.file_size if result.file_size is not None else -1
+                    3, SORT_ROLE, result.file_size if result.file_size is not None else -1
                 )
                 parent.setData(
-                    3, SORT_ROLE, result.mod_time if result.mod_time is not None else -1.0
+                    4, SORT_ROLE, result.mod_time if result.mod_time is not None else -1.0
                 )
                 parent.setToolTip(0, result.file_path)
                 self._file_group_items[result.file_path] = parent
@@ -723,47 +729,49 @@ class SearchUI(QMainWindow):
                 bold_font = parent.font(0)
                 bold_font.setBold(True)
                 parent.setFont(0, bold_font)
-                self.results_tree.setColumnHidden(1, False)
+                self.results_tree.setColumnHidden(2, False)
 
             # Add before-context lines as dimmed children
             if result.context_before:
                 for ctx_line in result.context_before:
-                    ctx_item = QTreeWidgetItem(["", ctx_line, "", ""])
-                    ctx_item.setForeground(1, QColor(128, 128, 128))
-                    font = ctx_item.font(1)
+                    ctx_item = QTreeWidgetItem(["", "", ctx_line, "", ""])
+                    ctx_item.setForeground(2, QColor(128, 128, 128))
+                    font = ctx_item.font(2)
                     font.setItalic(True)
-                    ctx_item.setFont(1, font)
+                    ctx_item.setFont(2, font)
                     parent.addChild(ctx_item)
 
             # Add the match child
             child = self._create_result_item(result)
             child.setText(0, "")
-            child.setText(2, "")
             child.setText(3, "")
+            child.setText(4, "")
             parent.addChild(child)
             self._apply_match_highlight(child)
 
             # Add after-context lines as dimmed children
             if result.context_after:
                 for ctx_line in result.context_after:
-                    ctx_item = QTreeWidgetItem(["", ctx_line, "", ""])
-                    ctx_item.setForeground(1, QColor(128, 128, 128))
-                    font = ctx_item.font(1)
+                    ctx_item = QTreeWidgetItem(["", "", ctx_line, "", ""])
+                    ctx_item.setForeground(2, QColor(128, 128, 128))
+                    font = ctx_item.font(2)
                     font.setItalic(True)
-                    ctx_item.setFont(1, font)
+                    ctx_item.setFont(2, font)
                     parent.addChild(ctx_item)
 
             # Update match count using O(1) counter
             count = self._file_group_match_counts.get(result.file_path, 0) + 1
             self._file_group_match_counts[result.file_path] = count
-            parent.setText(1, f"{count} match{'es' if count != 1 else ''}")
-            parent.setData(1, SORT_ROLE, count)
+            parent.setText(2, f"{count} match{'es' if count != 1 else ''}")
+            parent.setData(2, SORT_ROLE, count)
 
     def _create_result_item(self, result: SearchResult) -> ResultTreeWidgetItem:
         """Convert a SearchResult into a sortable tree row with attached metadata."""
+        suffix = Path(result.file_path).suffix.lower()
         item = ResultTreeWidgetItem(
             [
                 result.file_path,
+                suffix,
                 result.display_text,
                 result.formatted_size,
                 result.formatted_mod_time,
@@ -772,18 +780,19 @@ class SearchUI(QMainWindow):
         metadata = self._serialize_result(result)
         item.setData(0, SORT_ROLE, result.file_path.lower())
         item.setData(0, RESULT_ROLE, metadata)
-        item.setData(1, SORT_ROLE, result.line_number if result.line_number is not None else -1)
-        item.setData(2, SORT_ROLE, result.file_size if result.file_size is not None else -1)
-        item.setData(3, SORT_ROLE, result.mod_time if result.mod_time is not None else -1.0)
+        item.setData(1, SORT_ROLE, suffix)
+        item.setData(2, SORT_ROLE, result.line_number if result.line_number is not None else -1)
+        item.setData(3, SORT_ROLE, result.file_size if result.file_size is not None else -1)
+        item.setData(4, SORT_ROLE, result.mod_time if result.mod_time is not None else -1.0)
         item.setToolTip(0, result.file_path)
         if result.line_content:
             tooltip = result.line_content
             if result.next_line:
                 tooltip = f"{tooltip}\n{result.next_line}"
-            item.setToolTip(1, tooltip)
+            item.setToolTip(2, tooltip)
         # Store highlight info for widget creation
         if result.match_start is not None and result.match_length and result.match_length > 0:
-            item.setData(1, HIGHLIGHT_ROLE, (result.match_start, result.match_length))
+            item.setData(2, HIGHLIGHT_ROLE, (result.match_start, result.match_length))
         return item
 
     def _serialize_result(self, result: SearchResult) -> dict[str, str | int | float | None]:
@@ -804,7 +813,7 @@ class SearchUI(QMainWindow):
 
     def _apply_match_highlight(self, item: ResultTreeWidgetItem) -> None:
         """Apply HTML highlighting to the matching line column if match position is available."""
-        highlight_data = item.data(1, HIGHLIGHT_ROLE)
+        highlight_data = item.data(2, HIGHLIGHT_ROLE)
         if highlight_data is None:
             return
         match_start, match_length = highlight_data
@@ -826,7 +835,7 @@ class SearchUI(QMainWindow):
         label = QLabel(html_text)
         label.setTextFormat(Qt.TextFormat.RichText)
         label.setContentsMargins(2, 0, 2, 0)
-        self.results_tree.setItemWidget(item, 1, label)
+        self.results_tree.setItemWidget(item, 2, label)
 
     def _parse_optional_int(self, value: str) -> int | None:
         """Parse an optional integer field after validation has run."""

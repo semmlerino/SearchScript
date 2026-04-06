@@ -590,11 +590,11 @@ def test_controller_drain_remaining_results(qapp: QApplication):
     parent = controller.ui.results_tree.topLevelItem(0)
     assert parent is not None
     assert parent.text(0) == "/tmp/a.txt"
-    assert parent.text(1) == "1 match"
+    assert parent.text(2) == "1 match"
     assert parent.childCount() == 1
     child = parent.child(0)
     assert child is not None
-    assert child.text(1) == "3: hello"
+    assert child.text(2) == "3: hello"
     close_widget(controller.ui)
 
 
@@ -1070,12 +1070,12 @@ def test_results_tree_sorts_size_numerically(qapp: QApplication):
         ]
     )
 
-    ui.results_tree.sortItems(2, Qt.SortOrder.AscendingOrder)
+    ui.results_tree.sortItems(3, Qt.SortOrder.AscendingOrder)
     sizes = []
     for i in range(ui.results_tree.topLevelItemCount()):
         item = ui.results_tree.topLevelItem(i)
         assert item is not None
-        sizes.append(item.text(2))  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+        sizes.append(item.text(3))  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
 
     assert sizes == ["10 B", "2.0 KB", "100.0 MB"]
     close_widget(ui)
