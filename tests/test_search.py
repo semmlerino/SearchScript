@@ -17,7 +17,7 @@ import pytest
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import QApplication, QWidget
 
-from search_script.config import ValidationError
+from search_script.config import SearchError, ValidationError
 from search_script.file_utils import FileOperations, is_nfs_path
 from search_script.inventory import InventoryManager
 from search_script.models import SearchBackend, SearchMode, SearchResult
@@ -535,18 +535,109 @@ def test_ripgrep_search_honors_max_results(tmp_path: Path):
     assert len(results) == 3
 
 
-def test_ripgrep_backend_falls_back_to_python_when_unavailable(tmp_path: Path):
+def test_explicit_ripgrep_backend_errors_when_unavailable(tmp_path: Path):
     test_file = tmp_path / "notes.txt"
     test_file.write_text("needle")
 
     engine = SearchEngine()
     engine._ripgrep._rg_path = None  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(SearchError, match="rg could not be started"):
+        list(
+            engine.search_files(
+                str(tmp_path),
+                "needle",
+                search_within_files=True,
+                search_backend=SearchBackend.RIPGREP,
+            )
+        )
+
+
+def test_explicit_ripgrep_missing_from_path_errors(tmp_path: Path):
+    (tmp_path / "notes.txt").write_text("needle")
+
+    engine = SearchEngine()
+    engine._rg_path = None  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(SearchError, match="rg was not found"):
+        list(
+            engine.search_files(
+                str(tmp_path),
+                "needle",
+                search_within_files=True,
+                search_backend=SearchBackend.RIPGREP,
+            )
+        )
+
+
+def test_explicit_ripgrep_rejects_match_folders_without_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    (tmp_path / "target.txt").write_text("content")
+
+    engine = SearchEngine()
+    engine._rg_path = "rg"  # pyright: ignore[reportPrivateUsage]
+
+    def fail_get_snapshot(*_: Any, **__: Any):
+        raise AssertionError("explicit ripgrep should not build inventory")
+
+    monkeypatch.setattr(
+        engine._inventory,  # pyright: ignore[reportPrivateUsage]
+        "get_snapshot",
+        fail_get_snapshot,
+    )
+
+    with pytest.raises(SearchError, match="matching folder names"):
+        list(
+            engine.search_files(
+                str(tmp_path),
+                "target",
+                search_within_files=False,
+                search_backend=SearchBackend.RIPGREP,
+                match_folders=True,
+            )
+        )
+
+
+def test_explicit_ripgrep_rejects_fuzzy_without_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    (tmp_path / "target.txt").write_text("content")
+
+    engine = SearchEngine()
+    engine._rg_path = "rg"  # pyright: ignore[reportPrivateUsage]
+
+    def fail_get_snapshot(*_: Any, **__: Any):
+        raise AssertionError("explicit ripgrep should not build inventory")
+
+    monkeypatch.setattr(
+        engine._inventory,  # pyright: ignore[reportPrivateUsage]
+        "get_snapshot",
+        fail_get_snapshot,
+    )
+
+    with pytest.raises(SearchError, match="fuzzy search"):
+        list(
+            engine.search_files(
+                str(tmp_path),
+                "target",
+                search_within_files=False,
+                search_mode=SearchMode.FUZZY,
+                search_backend=SearchBackend.RIPGREP,
+            )
+        )
+
+
+def test_auto_backend_still_falls_back_to_python_when_ripgrep_unavailable(tmp_path: Path):
+    test_file = tmp_path / "notes.txt"
+    test_file.write_text("needle")
+
+    engine = SearchEngine()
+    engine._rg_path = None  # pyright: ignore[reportPrivateUsage]
     results = list(
         engine.search_files(
             str(tmp_path),
             "needle",
             search_within_files=True,
-            search_backend=SearchBackend.RIPGREP,
+            search_backend=SearchBackend.AUTO,
         )
     )
 

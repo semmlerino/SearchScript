@@ -238,7 +238,12 @@ class SearchEngine:
                         on_limit_reached=on_limit_reached,
                     )
                     return
-                except RipgrepUnavailableError:
+                except RipgrepUnavailableError as exc:
+                    if search_backend == SearchBackend.RIPGREP:
+                        raise SearchError(
+                            "Ripgrep backend was requested, but rg could not be started. "
+                            "Check that rg is on the PATH seen by the application."
+                        ) from exc
                     self.logger.info("Falling back to Python search backend")
             elif not match_folders:
                 try:
@@ -271,8 +276,18 @@ class SearchEngine:
                             exclude_shots=exclude_shots,
                         )
                     return
-                except RipgrepUnavailableError:
+                except RipgrepUnavailableError as exc:
+                    if search_backend == SearchBackend.RIPGREP:
+                        raise SearchError(
+                            "Ripgrep backend was requested, but rg could not be started. "
+                            "Check that rg is on the PATH seen by the application."
+                        ) from exc
                     self.logger.info("Falling back to Python search backend")
+            elif search_backend == SearchBackend.RIPGREP:
+                raise SearchError(
+                    "Ripgrep backend does not support matching folder names. "
+                    "Turn off 'Match folder names' or use the Python backend."
+                )
 
         files_processed = 0
         emitted_results = 0
@@ -605,12 +620,21 @@ class SearchEngine:
     ) -> SearchBackend:
         """Select the concrete backend while preserving Python fallback semantics."""
         if search_mode == SearchMode.FUZZY:
+            if requested_backend == SearchBackend.RIPGREP:
+                raise SearchError(
+                    "Ripgrep backend does not support fuzzy search. "
+                    "Use substring, glob, or regex mode, or switch to the Python backend."
+                )
             return SearchBackend.PYTHON
         if requested_backend == SearchBackend.PYTHON:
             return SearchBackend.PYTHON
         if requested_backend == SearchBackend.RIPGREP:
-            # Honor explicit ripgrep request (if available)
-            return SearchBackend.RIPGREP if self._rg_path else SearchBackend.PYTHON
+            if self._rg_path is None:
+                raise SearchError(
+                    "Ripgrep backend was requested, but rg was not found on the PATH "
+                    "seen by the application."
+                )
+            return SearchBackend.RIPGREP
         # AUTO: prefer ripgrep for ordinary content and filename searches.
         if not search_within_files:
             return SearchBackend.RIPGREP if self._rg_path else SearchBackend.PYTHON
