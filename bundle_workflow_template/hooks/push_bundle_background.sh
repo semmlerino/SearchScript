@@ -36,6 +36,17 @@ detect_python() {
 mkdir -p "$HOOK_OUTPUT_DIR"
 exec > "$LOG_FILE" 2>&1
 
+log_exit() {
+    exit_code=$?
+    if [ "$exit_code" -ne 0 ]; then
+        printf '[%s] Background bundle push exited with code %s\n' "$(date)" "$exit_code"
+    fi
+}
+
+trap log_exit EXIT
+trap 'printf "[%s] Background bundle push received SIGTERM\n" "$(date)"; exit 143' TERM
+trap 'printf "[%s] Background bundle push received SIGHUP\n" "$(date)"; exit 129' HUP
+
 # Serialize concurrent pushes — if another push is running, skip this one
 exec 9>"$HOOK_OUTPUT_DIR/push.lock"
 flock -n 9 || { printf '[%s] Push already in progress, skipping\n' "$(date)"; exit 0; }

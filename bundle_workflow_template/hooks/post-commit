@@ -157,9 +157,15 @@ printf '%s\n' "$ENCODED_RELEASE_BRANCH" > "$HOOK_OUTPUT_DIR/encoded_release_bran
 BACKGROUND_SCRIPT="$PROJECT_ROOT/.git/hooks/push_bundle_background.sh"
 if [ -f "$BACKGROUND_SCRIPT" ] && [ -x "$BACKGROUND_SCRIPT" ]; then
     printf '\nLaunching background push...\n' >> "$HOOK_OUTPUT_DIR/bundle.txt"
-    nohup bash "$BACKGROUND_SCRIPT" > "$HOOK_OUTPUT_DIR/background-startup.log" 2>&1 &
+    LAUNCH_MODE="nohup"
+    if command -v setsid >/dev/null 2>&1; then
+        LAUNCH_MODE="setsid+nohup"
+        nohup setsid bash "$BACKGROUND_SCRIPT" > "$HOOK_OUTPUT_DIR/background-startup.log" 2>&1 &
+    else
+        nohup bash "$BACKGROUND_SCRIPT" > "$HOOK_OUTPUT_DIR/background-startup.log" 2>&1 &
+    fi
     BG_PID=$!
-    printf 'PASS: background push started (PID: %s)\n' "$BG_PID" >> "$HOOK_OUTPUT_DIR/bundle.txt"
+    printf 'PASS: background push started (PID: %s, mode: %s)\n' "$BG_PID" "$LAUNCH_MODE" >> "$HOOK_OUTPUT_DIR/bundle.txt"
 else
     printf 'WARN: background script missing or not executable: %s\n' "$BACKGROUND_SCRIPT" >> "$HOOK_OUTPUT_DIR/bundle.txt"
 fi
